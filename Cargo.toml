@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/ccr-types",
+    "crates/ccr-config",
+    "crates/ccr-router",
+    "crates/ccr-transformer",
+    "crates/ccr-sse",
+    "crates/ccr-agent",
+    "crates/ccr-cli",
+    "crates/ccr-preset",
+    "crates/ccr-server",
+    "crates/ccr-ui",
+    "crates/ccr-plugin",
+    "crates/ccr-app-core",
+]
+resolver = "2"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = 3
+codegen-units = 1

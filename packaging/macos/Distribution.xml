@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>Claude Code Router</title>
+    <organization>com.musistudio.ccr</organization>
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+
+    <pkg-ref id="com.musistudio.ccr">
+        <bundle-version>
+            <bundle id="com.musistudio.ccr" CFBundleVersion="0.1.0"/>
+        </bundle-version>
+    </pkg-ref>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.musistudio.ccr"/>
+        </line>
+    </choices-outline>
+
+    <choice id="default"/>
+    <choice id="com.musistudio.ccr" visible="false">
+        <pkg-ref id="com.musistudio.ccr"/>
+    </choice>
+</installer-gui-script>

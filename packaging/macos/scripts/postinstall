@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Set correct permissions
+chmod +x /usr/local/bin/ccr-server
+chmod +x /usr/local/bin/ccr-cli
+chmod +x /usr/local/bin/ccr-ui
+
+# Create default config if not exists
+if [ ! -f ~/.claude-code-router/config.json ]; then
+    cat > ~/.claude-code-router/config.json <<'EOF'
+{
+  "Providers": [
+    {
+      "name": "openai",
+      "api_kind": "openai_responses",
+      "api_kind_source": "explicit",
+      "api_base_url": "https://api.openai.com/v1/responses",
+      "api_key": "$OPENAI_API_KEY",
+      "models": [
+        "gpt-5-codex",
+        "gpt-5",
+        "gpt-4.1"
+      ],
+      "transformer": {
+        "use": [
+          "openai"
+        ]
+      }
+    }
+  ],
+  "Router": {
+    "default": "openai,gpt-5-codex"
+  }
+}
+EOF
+fi
+
+# Add to PATH if not already added
+SHELL_RC=""
+if [ -n "$ZSH_VERSION" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -n "$BASH_VERSION" ]; then
+    SHELL_RC="$HOME/.bash_profile"
+fi
+
+if [ -n "$SHELL_RC" ] && [ -f "$SHELL_RC" ]; then
+    if ! grep -q "/usr/local/bin" "$SHELL_RC"; then
+        echo 'export PATH="/usr/local/bin:$PATH"' >> "$SHELL_RC"
+    fi
+fi
+
+echo "✅ Claude Code Router installed successfully!"
+echo "Run 'ccr --help' to get started"
+
+exit 0

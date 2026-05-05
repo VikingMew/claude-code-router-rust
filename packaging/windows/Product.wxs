@@ -1,0 +1,125 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product Name='Claude Code Router'
+           Id='*'
+           UpgradeCode='12345678-1234-1234-1234-123456789012'
+           Language='1033'
+           Codepage='1252'
+           Version='0.1.0'
+           Manufacturer='MusiStudio'>
+
+    <Package Id='*'
+             Keywords='Installer'
+             Description='Claude Code Router Installer'
+             Comments='Claude Code Router is a tool that routes Claude Code requests to different LLM providers'
+             Manufacturer='MusiStudio'
+             InstallerVersion='500'
+             Languages='1033'
+             Compressed='yes'
+             SummaryCodepage='1252'
+             InstallScope='perMachine'/>
+
+    <MajorUpgrade DowngradeErrorMessage='A newer version is already installed.' />
+
+    <Media Id='1' Cabinet='ccr.cab' EmbedCab='yes' />
+
+    <!-- Installation directory -->
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='INSTALLDIR' Name='Claude Code Router'>
+          <Component Id='MainExecutables' Guid='*'>
+            <!-- Binaries -->
+            <File Id='CcrServerExe' Name='ccr-server.exe' Source='..\\..\\target\\release\\ccr-server.exe' KeyPath='yes'/>
+            <File Id='CcrCliExe' Name='ccr-cli.exe' Source='..\\..\\target\\release\\ccr-cli.exe'/>
+            <File Id='CcrUiExe' Name='ccr-ui.exe' Source='..\\..\\target\\release\\ccr-ui.exe'/>
+
+            <!-- Add to PATH -->
+            <Environment Id='PATH'
+                        Name='PATH'
+                        Value='[INSTALLDIR]'
+                        Permanent='no'
+                        Part='last'
+                        Action='set'
+                        System='yes'/>
+          </Component>
+
+          <!-- Uninstaller script -->
+          <Component Id='UninstallScript' Guid='*'>
+            <File Id='UninstallBat' Name='uninstall.bat' Source='scripts\\uninstall.bat'/>
+          </Component>
+        </Directory>
+      </Directory>
+
+      <!-- Start Menu -->
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='ApplicationProgramsFolder' Name='Claude Code Router'>
+          <Component Id='StartMenuShortcuts' Guid='*'>
+            <Shortcut Id='CcrUiShortcut'
+                     Name='Claude Code Router'
+                     Description='Launch Claude Code Router UI'
+                     Target='[INSTALLDIR]ccr-ui.exe'
+                     WorkingDirectory='INSTALLDIR'/>
+
+            <Shortcut Id='UninstallShortcut'
+                     Name='Uninstall Claude Code Router'
+                     Description='Uninstalls Claude Code Router'
+                     Target='[SystemFolder]msiexec.exe'
+                     Arguments='/x [ProductCode]'/>
+
+            <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall'/>
+            <RegistryValue Root='HKCU'
+                          Key='Software\\MusiStudio\\ClaudeCodeRouter'
+                          Name='installed'
+                          Type='integer'
+                          Value='1'
+                          KeyPath='yes'/>
+          </Component>
+        </Directory>
+      </Directory>
+
+      <!-- User config directory -->
+      <Directory Id='AppDataFolder'>
+        <Directory Id='UserConfigDir' Name='claude-code-router'>
+          <Component Id='ConfigDirectory' Guid='*'>
+            <CreateFolder>
+              <Permission User='Everyone' GenericAll='yes'/>
+            </CreateFolder>
+            <RegistryValue Root='HKCU'
+                          Key='Software\\MusiStudio\\ClaudeCodeRouter'
+                          Name='ConfigDir'
+                          Type='string'
+                          Value='[UserConfigDir]'
+                          KeyPath='yes'/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- Features -->
+    <Feature Id='Complete' Level='1'>
+      <ComponentRef Id='MainExecutables'/>
+      <ComponentRef Id='UninstallScript'/>
+      <ComponentRef Id='StartMenuShortcuts'/>
+      <ComponentRef Id='ConfigDirectory'/>
+    </Feature>
+
+    <!-- UI -->
+    <UIRef Id='WixUI_InstallDir'/>
+    <Property Id='WIXUI_INSTALLDIR' Value='INSTALLDIR'/>
+
+    <!-- License -->
+    <WixVariable Id='WixUILicenseRtf' Value='resources\\License.rtf'/>
+
+    <!-- Custom actions -->
+    <CustomAction Id='CreateDefaultConfig'
+                  Directory='INSTALLDIR'
+                  ExeCommand='cmd /c if not exist "%USERPROFILE%\\.claude-code-router\\config.json" (mkdir "%USERPROFILE%\\.claude-code-router" &amp; echo {\"Providers\":[{\"name\":\"openai\",\"api_kind\":\"openai_responses\",\"api_kind_source\":\"explicit\",\"api_base_url\":\"https://api.openai.com/v1/responses\",\"api_key\":\"$OPENAI_API_KEY\",\"models\":[\"gpt-5-codex\",\"gpt-5\",\"gpt-4.1\"],\"transformer\":{\"use\":[\"openai\"]}}],\"Router\":{\"default\":\"openai,gpt-5-codex\"}} > "%USERPROFILE%\\.claude-code-router\\config.json")'
+                  Execute='deferred'
+                  Return='ignore'
+                  Impersonate='yes'/>
+
+    <InstallExecuteSequence>
+      <Custom Action='CreateDefaultConfig' After='InstallFiles'>NOT Installed</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

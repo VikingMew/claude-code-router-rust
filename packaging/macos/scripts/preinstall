@@ -1,0 +1,14 @@
+#!/bin/bash
+# Backup existing installation if exists
+if [ -f "/usr/local/bin/ccr-server" ]; then
+    echo "Backing up existing installation..."
+    mkdir -p /tmp/ccr-backup
+    cp /usr/local/bin/ccr-* /tmp/ccr-backup/ 2>/dev/null || true
+fi
+
+# Create necessary directories
+mkdir -p ~/.claude-code-router
+mkdir -p ~/.claude-code-router/logs
+mkdir -p ~/.claude-code-router/backups
+
+exit 0
