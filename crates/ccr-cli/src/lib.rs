@@ -1,43 +1,9 @@
-use anyhow::Result;
-use std::path::PathBuf;
-
 pub mod claude_config;
 pub mod codex_config;
 pub mod openclaw_config;
 pub mod opencode_config;
 
-pub fn pid_file_path() -> PathBuf {
-    dirs_next::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude-code-router")
-        .join(".ccr.pid")
-}
-
-pub fn read_pid(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-}
-
-pub fn write_pid(path: &std::path::Path, pid: u32) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, pid.to_string())?;
-    Ok(())
-}
-
-#[cfg(unix)]
-pub fn is_process_alive(pid: u32) -> bool {
-    use nix::sys::signal;
-    use nix::unistd::Pid;
-    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
-}
-
-#[cfg(not(unix))]
-pub fn is_process_alive(_pid: u32) -> bool {
-    false
-}
+pub use ccr_app_core::status::{is_process_alive, pid_file_path, read_pid, write_pid};
 
 pub fn activate_output(port: u16, api_key: Option<&str>) -> String {
     let key = api_key.unwrap_or("any");

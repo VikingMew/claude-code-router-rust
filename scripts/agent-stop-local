@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+PID_PATH="${1:-}"
+if [ -z "$PID_PATH" ] || [ ! -f "$PID_PATH" ]; then
+  echo "usage: scripts/agent-stop-local <pid-path>" >&2
+  exit 2
+fi
+
+PID="$(cat "$PID_PATH")"
+kill "$PID" 2>/dev/null || true
+rm -f "$PID_PATH"

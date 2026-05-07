@@ -1,4 +1,4 @@
-use ccr_app_core::logging::{app_log_path, append_app_log};
+use ccr_app_core::logging::{app_log_path, append_app_log, query_app_log_content, LogQuery};
 use eframe::egui;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
@@ -10,6 +10,8 @@ pub struct LogsTab {
     visible: bool,
     last_refresh: Option<Instant>,
     last_snapshot: Option<LogFileSnapshot>,
+    target_filter: String,
+    event_filter: String,
 }
 
 impl LogsTab {
@@ -19,6 +21,8 @@ impl LogsTab {
             visible: false,
             last_refresh: None,
             last_snapshot: None,
+            target_filter: String::new(),
+            event_filter: String::new(),
         }
     }
 
@@ -70,6 +74,10 @@ impl LogsTab {
         self.refresh_if_due(Instant::now());
 
         ui.horizontal(|ui| {
+            ui.label("Target");
+            ui.text_edit_singleline(&mut self.target_filter);
+            ui.label("Event");
+            ui.text_edit_singleline(&mut self.event_filter);
             if ui.button("Clear").clicked() {
                 let path = app_log_path();
                 if let Some(parent) = path.parent() {
@@ -81,7 +89,8 @@ impl LogsTab {
             }
         });
         ui.separator();
-        let mut display = self.content.as_str();
+        let filtered = self.filtered_content();
+        let mut display = filtered.as_str();
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut display)
@@ -90,6 +99,33 @@ impl LogsTab {
             );
         });
         ui.ctx().request_repaint_after(AUTO_REFRESH_INTERVAL);
+    }
+
+    fn filtered_content(&self) -> String {
+        if self.target_filter.trim().is_empty() && self.event_filter.trim().is_empty() {
+            return self.content.clone();
+        }
+        let query = LogQuery {
+            target: non_empty_filter(&self.target_filter),
+            event: non_empty_filter(&self.event_filter),
+            provider: None,
+            route: None,
+            limit: Some(500),
+        };
+        query_app_log_content(&self.content, &query)
+            .into_iter()
+            .map(|event| event.raw)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn non_empty_filter(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 
@@ -138,6 +174,7 @@ mod tests {
         assert_eq!(tab.content, "");
         assert!(!tab.visible);
         assert!(tab.last_refresh.is_none());
+        assert_eq!(tab.filtered_content(), "");
     }
 
     #[test]
@@ -200,5 +237,22 @@ mod tests {
         assert_eq!(content, "这是一个什么项目？");
         assert!(snapshot.unwrap().len > 4);
         std::fs::remove_dir_all(temp).ok();
+    }
+
+    #[test]
+    fn filtered_content_filters_by_target_and_event() {
+        let mut tab = LogsTab::new();
+        tab.content = concat!(
+            "2026-05-07T12:00:00+08:00 [server] event=\"started\"\n",
+            "2026-05-07T12:00:01+08:00 [upstream] event=\"result\"\n",
+        )
+        .to_string();
+        tab.target_filter = "upstream".to_string();
+        tab.event_filter = "result".to_string();
+
+        let filtered = tab.filtered_content();
+
+        assert!(filtered.contains("[upstream]"));
+        assert!(!filtered.contains("[server]"));
     }
 }

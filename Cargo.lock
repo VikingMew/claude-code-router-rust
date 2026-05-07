@@ -1105,6 +1105,7 @@ dependencies = [
  "ccr-types",
  "chrono",
  "dirs-next",
+ "nix",
  "reqwest",
  "serde",
  "serde_json",

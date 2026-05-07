@@ -1,10 +1,30 @@
 use chrono::{Local, NaiveDate};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const RESPONSE_LOG_LIMIT: usize = 2048;
 const UI_ERROR_LIMIT: usize = 300;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogQuery {
+    pub target: Option<String>,
+    pub event: Option<String>,
+    pub provider: Option<String>,
+    pub route: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedLogEvent {
+    pub timestamp: String,
+    pub target: String,
+    pub event: Option<String>,
+    pub fields: BTreeMap<String, String>,
+    pub raw: String,
+}
 
 pub fn app_log_path() -> PathBuf {
     app_log_path_for_date(Local::now().date_naive())
@@ -59,6 +79,143 @@ pub fn format_app_log_line(target: &str, event: &str, fields: &[(&str, String)])
         line.push_str(&quote_value(&sanitize_value(value)));
     }
     line
+}
+
+pub fn query_app_log(path: &Path, query: &LogQuery) -> std::io::Result<Vec<ParsedLogEvent>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(query_app_log_content(&content, query))
+}
+
+pub fn query_app_log_content(content: &str, query: &LogQuery) -> Vec<ParsedLogEvent> {
+    let limit = query.limit.unwrap_or(200);
+    content
+        .lines()
+        .filter_map(parse_app_log_line)
+        .filter(|event| log_event_matches(event, query))
+        .rev()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+pub fn parse_app_log_line(line: &str) -> Option<ParsedLogEvent> {
+    let raw = line.to_string();
+    let (timestamp, rest) = line.split_once(' ')?;
+    let rest = rest.strip_prefix('[')?;
+    let (target, fields_text) = rest.split_once("] ")?;
+    let mut fields = BTreeMap::new();
+    for (key, value) in parse_key_values(fields_text) {
+        fields.insert(key, value);
+    }
+    let event = fields.get("event").cloned();
+    Some(ParsedLogEvent {
+        timestamp: timestamp.to_string(),
+        target: target.to_string(),
+        event,
+        fields,
+        raw,
+    })
+}
+
+fn log_event_matches(event: &ParsedLogEvent, query: &LogQuery) -> bool {
+    if query.target.as_deref().is_some_and(|v| event.target != v) {
+        return false;
+    }
+    if query
+        .event
+        .as_deref()
+        .is_some_and(|v| event.event.as_deref() != Some(v))
+    {
+        return false;
+    }
+    if query
+        .provider
+        .as_deref()
+        .is_some_and(|v| event.fields.get("provider").map(String::as_str) != Some(v))
+    {
+        return false;
+    }
+    if query
+        .route
+        .as_deref()
+        .is_some_and(|v| event.fields.get("route").map(String::as_str) != Some(v))
+    {
+        return false;
+    }
+    true
+}
+
+fn parse_key_values(input: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    let mut chars = input.chars().peekable();
+    loop {
+        while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+        let mut key = String::new();
+        while let Some(ch) = chars.peek().copied() {
+            if ch == '=' {
+                chars.next();
+                break;
+            }
+            if ch.is_whitespace() {
+                break;
+            }
+            key.push(ch);
+            chars.next();
+        }
+        if key.is_empty() {
+            break;
+        }
+        let value = if chars.peek() == Some(&'"') {
+            chars.next();
+            parse_quoted_value(&mut chars)
+        } else {
+            let mut value = String::new();
+            while let Some(ch) = chars.peek().copied() {
+                if ch.is_whitespace() {
+                    break;
+                }
+                value.push(ch);
+                chars.next();
+            }
+            value
+        };
+        values.push((key, value));
+    }
+    values
+}
+
+fn parse_quoted_value<I>(chars: &mut std::iter::Peekable<I>) -> String
+where
+    I: Iterator<Item = char>,
+{
+    let mut value = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('"') => value.push('"'),
+                Some('\\') => value.push('\\'),
+                Some('n') => value.push('\n'),
+                Some('r') => value.push('\r'),
+                Some('t') => value.push('\t'),
+                Some(other) => value.push(other),
+                None => break,
+            },
+            other => value.push(other),
+        }
+    }
+    value
 }
 
 pub fn redact_headers(headers: &[(String, String)]) -> String {
@@ -213,5 +370,48 @@ mod tests {
             "claude-code-router-2026-05-01.log"
         );
         assert!(app_log_path_for_date(date).ends_with("claude-code-router-2026-05-01.log"));
+    }
+
+    #[test]
+    fn parse_app_log_line_extracts_fields() {
+        let line = r#"2026-05-07T12:00:00+08:00 [upstream] event="result" provider="openai" route="openai,gpt-4o" status="200""#;
+
+        let parsed = parse_app_log_line(line).unwrap();
+
+        assert_eq!(parsed.timestamp, "2026-05-07T12:00:00+08:00");
+        assert_eq!(parsed.target, "upstream");
+        assert_eq!(parsed.event.as_deref(), Some("result"));
+        assert_eq!(parsed.fields["provider"], "openai");
+        assert_eq!(parsed.fields["route"], "openai,gpt-4o");
+    }
+
+    #[test]
+    fn parse_app_log_line_unescapes_quotes() {
+        let line = r#"2026-05-07T12:00:00+08:00 [server] event="message" value="a \"b\" c\\d""#;
+
+        let parsed = parse_app_log_line(line).unwrap();
+
+        assert_eq!(parsed.fields["value"], "a \"b\" c\\d");
+    }
+
+    #[test]
+    fn query_app_log_content_filters_and_limits() {
+        let content = concat!(
+            "2026-05-07T12:00:00+08:00 [upstream] event=\"result\" provider=\"openai\" route=\"openai,a\"\n",
+            "2026-05-07T12:00:01+08:00 [upstream] event=\"result\" provider=\"anthropic\" route=\"anthropic,b\"\n",
+            "2026-05-07T12:00:02+08:00 [server] event=\"started\"\n",
+        );
+        let query = LogQuery {
+            target: Some("upstream".to_string()),
+            event: Some("result".to_string()),
+            provider: Some("anthropic".to_string()),
+            route: None,
+            limit: Some(10),
+        };
+
+        let events = query_app_log_content(content, &query);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].fields["route"], "anthropic,b");
     }
 }

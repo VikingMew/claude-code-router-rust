@@ -1,5 +1,9 @@
 use ccr_app_core::settings::route_pool_config;
-use ccr_app_core::status::{InjectionSnapshot, ServerSnapshot};
+use ccr_app_core::status::{
+    ccr_server_executable_from, check_health,
+    read_server_snapshot as read_server_snapshot_from_core, start_server, stop_server,
+    AdditiveClientSnapshot, InjectionSnapshot, ServerSnapshot,
+};
 use ccr_cli::claude_config::{activate_ccr, claude_injection_snapshot, deactivate_ccr};
 use ccr_cli::codex_config::{activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr};
 use ccr_cli::openclaw_config::{
@@ -10,12 +14,10 @@ use ccr_cli::opencode_config::{
     activate_opencode_ccr, deactivate_opencode_ccr, opencode_config_path, opencode_provider_exists,
     opencode_provider_present,
 };
-use ccr_cli::{is_process_alive, pid_file_path, read_pid, write_pid};
 use ccr_config::{default_config_path, load_config};
 use eframe::egui;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 const ROUTE_POOL_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -27,13 +29,6 @@ struct StatusSnapshot {
     codex: InjectionSnapshot,
     opencode: AdditiveClientSnapshot,
     openclaw: AdditiveClientSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AdditiveClientSnapshot {
-    ProviderCurrent { path: String },
-    ProviderDrifted { path: String },
-    Missing { path: String },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +50,18 @@ struct RoutePoolRouteStatus {
     last_success_epoch_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeMetricSummary {
+    route: String,
+    provider: String,
+    attempts: u64,
+    successes: u64,
+    failures: u64,
+    average_latency_ms: Option<u64>,
+    last_http_status: Option<u16>,
+    last_error_class: Option<String>,
+}
+
 pub struct StatusTab {
     snapshot: StatusSnapshot,
     health_status: String,
@@ -70,6 +77,7 @@ pub struct StatusTab {
     server_operation_status: String,
     server_operation_checking: bool,
     route_pool_status: Option<Result<RoutePoolStatusResponse, String>>,
+    runtime_metrics_summary: Option<Result<Vec<RuntimeMetricSummary>, String>>,
     route_pool_last_refresh: Option<Instant>,
 }
 
@@ -90,6 +98,7 @@ impl StatusTab {
             server_operation_status: String::new(),
             server_operation_checking: false,
             route_pool_status: None,
+            runtime_metrics_summary: None,
             route_pool_last_refresh: None,
         };
         tab.refresh_snapshot();
@@ -300,8 +309,21 @@ impl StatusTab {
                     ui.label("Route Pool runtime: Not loaded yet.");
                 }
             }
+            match &self.runtime_metrics_summary {
+                Some(Ok(summary)) => show_runtime_metrics_summary(ui, summary),
+                Some(Err(error)) => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!("Runtime metrics unavailable: {error}"),
+                    );
+                }
+                None => {
+                    ui.label("Runtime metrics: Not loaded yet.");
+                }
+            }
         } else {
             self.route_pool_status = None;
+            self.runtime_metrics_summary = None;
             self.route_pool_last_refresh = None;
             ui.label("Route Pool runtime: Unavailable while server is stopped.");
         }
@@ -317,10 +339,9 @@ impl StatusTab {
             return;
         }
 
-        self.route_pool_status = Some(fetch_route_pool_status(
-            self.snapshot.server.port(),
-            api_key,
-        ));
+        let port = self.snapshot.server.port();
+        self.route_pool_status = Some(fetch_route_pool_status(port, api_key));
+        self.runtime_metrics_summary = Some(fetch_runtime_metrics_summary(port, api_key));
         self.route_pool_last_refresh = Some(now);
     }
 
@@ -483,20 +504,6 @@ impl StatusTab {
     }
 }
 
-impl AdditiveClientSnapshot {
-    fn provider_present(&self) -> bool {
-        matches!(
-            self,
-            AdditiveClientSnapshot::ProviderCurrent { .. }
-                | AdditiveClientSnapshot::ProviderDrifted { .. }
-        )
-    }
-
-    fn is_current(&self) -> bool {
-        matches!(self, AdditiveClientSnapshot::ProviderCurrent { .. })
-    }
-}
-
 impl Default for StatusTab {
     fn default() -> Self {
         Self::new()
@@ -538,17 +545,11 @@ fn openclaw_snapshot(port: u16) -> AdditiveClientSnapshot {
 }
 
 fn read_server_snapshot() -> ServerSnapshot {
-    let pid_path = pid_file_path();
     let port = load_config(&default_config_path())
         .ok()
         .and_then(|c| c.port)
         .unwrap_or(3456);
-
-    match read_pid(&pid_path) {
-        Some(pid) if is_process_alive(pid) => ServerSnapshot::Running { pid, port },
-        Some(pid) => ServerSnapshot::StalePid { pid, port },
-        None => ServerSnapshot::Stopped { port },
-    }
+    read_server_snapshot_from_core(port)
 }
 
 fn show_injection_snapshot(ui: &mut egui::Ui, snapshot: &InjectionSnapshot) {
@@ -649,6 +650,32 @@ fn fetch_route_pool_status(
     response.json().map_err(|error| error.to_string())
 }
 
+fn fetch_runtime_metrics_summary(
+    port: u16,
+    api_key: Option<&str>,
+) -> Result<Vec<RuntimeMetricSummary>, String> {
+    let url = format!("http://127.0.0.1:{}/api/runtime-metrics/summary", port);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client.get(&url);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        if response.status().as_u16() == 401 {
+            return Err(
+                "unauthorized. The UI config API key does not match the running server."
+                    .to_string(),
+            );
+        }
+        return Err(format!("HTTP {}", response.status()));
+    }
+    response.json().map_err(|error| error.to_string())
+}
+
 fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) {
     ui.label(format!(
         "Route Pool runtime: enabled={}, policy {} failures, {}s ban",
@@ -687,29 +714,38 @@ fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) 
     }
 }
 
+fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RuntimeMetricSummary]) {
+    ui.label("Runtime metrics:");
+    if summary.is_empty() {
+        ui.label("No upstream attempts recorded.");
+        return;
+    }
+    let mut rows = summary.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.route.cmp(&right.route));
+    for item in rows {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("{} ({})", item.route, item.provider));
+            ui.label(format!("Attempts: {}", item.attempts));
+            ui.label(format!("Success: {}", item.successes));
+            ui.label(format!("Failures: {}", item.failures));
+            if let Some(latency) = item.average_latency_ms {
+                ui.label(format!("Avg: {latency}ms"));
+            }
+            if let Some(status) = item.last_http_status {
+                ui.label(format!("Last HTTP: {status}"));
+            }
+            if let Some(error_class) = &item.last_error_class {
+                ui.label(format!("Last error: {error_class}"));
+            }
+        });
+    }
+}
+
 impl StatusTab {
     fn check_health(&mut self, port: u16) {
         self.health_checking = true;
         self.health_status.clear();
-
-        let url = format!("http://127.0.0.1:{}/health", port);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-
-        match client.get(&url).send() {
-            Ok(response) if response.status().is_success() => {
-                self.health_status = "✓ Server is healthy".to_string();
-            }
-            Ok(response) => {
-                self.health_status = format!("✗ Server returned status: {}", response.status());
-            }
-            Err(e) => {
-                self.health_status = format!("✗ Connection error: {}", e);
-            }
-        }
-
+        self.health_status = check_health(port).ui_message();
         self.health_checking = false;
     }
 
@@ -857,31 +893,10 @@ impl StatusTab {
         self.server_operation_checking = true;
         self.server_operation_status.clear();
 
-        let pid_path = pid_file_path();
-
-        // Check if already running
-        if let Some(pid) = read_pid(&pid_path) {
-            if is_process_alive(pid) {
-                self.server_operation_status = format!("✗ Server is already running (PID {})", pid);
-                self.server_operation_checking = false;
-                self.refresh_snapshot();
-                return;
-            }
-        }
-
         match ccr_server_executable() {
-            Some(exe_path) => match Command::new(&exe_path).spawn() {
-                Ok(child) => {
-                    let pid = child.id();
-                    if let Err(e) = write_pid(&pid_path, pid) {
-                        self.server_operation_status = format!("✗ Failed to write PID file: {}", e);
-                    } else {
-                        self.server_operation_status = format!("✓ Server started (PID {})", pid);
-                    }
-                }
-                Err(e) => {
-                    self.server_operation_status = format!("✗ Failed to start server: {}", e);
-                }
+            Some(exe_path) => match start_server(&exe_path) {
+                Ok(operation) => self.server_operation_status = operation.ui_message(),
+                Err(e) => self.server_operation_status = format!("✗ Failed to start server: {}", e),
             },
             None => {
                 self.server_operation_status = "✗ Cannot find ccr-server executable".to_string();
@@ -896,34 +911,12 @@ impl StatusTab {
         self.server_operation_checking = true;
         self.server_operation_status.clear();
 
-        let pid_path = pid_file_path();
-
-        match read_pid(&pid_path) {
-            Some(pid) => {
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::{self, Signal};
-                    use nix::unistd::Pid;
-
-                    match signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
-                        Ok(_) => {
-                            std::fs::remove_file(&pid_path).ok();
-                            self.server_operation_status = "✓ Server stopped".to_string();
-                        }
-                        Err(e) => {
-                            self.server_operation_status =
-                                format!("✗ Failed to stop server: {}", e);
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    self.server_operation_status =
-                        "✗ Stop server not supported on this platform".to_string();
-                }
+        match stop_server() {
+            Ok(operation) => {
+                self.server_operation_status = operation.ui_message();
             }
-            None => {
-                self.server_operation_status = "✗ Server is not running".to_string();
+            Err(e) => {
+                self.server_operation_status = format!("✗ Failed to stop server: {}", e);
             }
         }
 
@@ -934,24 +927,7 @@ impl StatusTab {
 
 fn ccr_server_executable() -> Option<std::path::PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
-    let file_name = if cfg!(windows) {
-        "ccr-server.exe"
-    } else {
-        "ccr-server"
-    };
-
-    let sibling = current_exe.parent()?.join(file_name);
-    if sibling.exists() {
-        return Some(sibling);
-    }
-
-    let bundled = current_exe
-        .parent()?
-        .parent()?
-        .join("Resources")
-        .join("bin")
-        .join(file_name);
-    bundled.exists().then_some(bundled)
+    ccr_server_executable_from(&current_exe)
 }
 
 #[cfg(test)]

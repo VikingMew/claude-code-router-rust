@@ -2,6 +2,8 @@ mod handlers;
 
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use ccr_agent::{Agent, ImageAgent};
+use ccr_app_core::logging::LogQuery;
+use ccr_app_core::metrics::{AttemptOutcome, RuntimeMetricsStore, UpstreamAttemptMetric};
 use ccr_config::{ReloadableConfig, default_config_path, load_config, save_config};
 use ccr_preset::{delete_preset, list_presets, load_preset};
 use ccr_router::find_provider;
@@ -28,6 +30,7 @@ pub struct AppState {
     client: reqwest::Client,
     agents: Vec<Arc<dyn Agent>>,
     route_pool_state: Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    metrics: Arc<Mutex<RuntimeMetricsStore>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -129,6 +132,22 @@ async fn get_logs(req: HttpRequest, state: web::Data<Arc<AppState>>) -> HttpResp
     }
 }
 
+async fn query_logs(
+    req: HttpRequest,
+    query: web::Query<LogQuery>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let log_path = ccr_app_core::logging::app_log_path();
+    match ccr_app_core::logging::query_app_log(&log_path, &query.into_inner()) {
+        Ok(events) => HttpResponse::Ok().json(events),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
 async fn delete_logs(req: HttpRequest, state: web::Data<Arc<AppState>>) -> HttpResponse {
     let config = state.get_config().await;
     if !auth_check(&req, &config) {
@@ -165,6 +184,43 @@ async fn get_route_pool_status(req: HttpRequest, state: web::Data<Arc<AppState>>
         "banSeconds": route_pool_ban_seconds(&config),
         "routes": snapshot
     }))
+}
+
+async fn get_runtime_metric_attempts(
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(100);
+    let attempts = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.recent_attempts(limit))
+        .unwrap_or_default();
+    HttpResponse::Ok().json(attempts)
+}
+
+async fn get_runtime_metric_summary(
+    req: HttpRequest,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let summary = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.summary())
+        .unwrap_or_default();
+    HttpResponse::Ok().json(summary)
 }
 
 async fn get_preset(
@@ -273,6 +329,7 @@ async fn messages(
         &config,
         &state.transformers,
         &state.route_pool_state,
+        &state.metrics,
         InboundProtocol::AnthropicMessages,
         &model_str,
         body_json,
@@ -371,6 +428,7 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
         &config,
         &state.transformers,
         &state.route_pool_state,
+        &state.metrics,
         InboundProtocol::OpenAiResponses,
         &model_str,
         body_json,
@@ -414,6 +472,7 @@ async fn send_with_route_pool(
     config: &Config,
     transformers: &TransformerRegistry,
     route_pool_state: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
     inbound: InboundProtocol,
     _primary_route: &str,
     body_json: serde_json::Value,
@@ -440,10 +499,23 @@ async fn send_with_route_pool(
         !banned
     });
 
-    for route in attempts {
+    for (attempt_index, route) in attempts.into_iter().enumerate() {
         let Some(provider) = find_provider(&route, config) else {
             let error = provider_not_found_message(&route, config);
             record_route_pool_failure(route_pool_state, config, &route, &error);
+            record_attempt_metric(
+                metrics,
+                inbound,
+                &route,
+                "",
+                "",
+                "",
+                None,
+                Some("provider_not_found"),
+                None,
+                attempt_index,
+                AttemptOutcome::ProviderNotFound,
+            );
             log_upstream_event(
                 "provider_not_found",
                 inbound,
@@ -487,6 +559,19 @@ async fn send_with_route_pool(
                     &[],
                 );
                 record_route_pool_failure(route_pool_state, config, &route, &error);
+                record_attempt_metric(
+                    metrics,
+                    inbound,
+                    &route,
+                    provider.name.as_str(),
+                    provider.api_base_url.as_str(),
+                    "",
+                    None,
+                    Some("build_error"),
+                    None,
+                    attempt_index,
+                    AttemptOutcome::BuildError,
+                );
                 last_error = Some(error.clone());
                 continue;
             }
@@ -544,11 +629,45 @@ async fn send_with_route_pool(
                         &route,
                         last_error.as_deref().unwrap_or("upstream failed"),
                     );
+                    record_attempt_metric(
+                        metrics,
+                        inbound,
+                        &route,
+                        provider.name.as_str(),
+                        upstream.url.as_str(),
+                        upstream.model.as_str(),
+                        Some(status_u16),
+                        Some(status_error_class(status_u16)),
+                        Some(latency_ms),
+                        attempt_index,
+                        AttemptOutcome::HttpError,
+                    );
                     continue;
                 }
                 if response.status().is_success() {
                     record_route_pool_success(route_pool_state, &route);
                 }
+                record_attempt_metric(
+                    metrics,
+                    inbound,
+                    &route,
+                    provider.name.as_str(),
+                    upstream.url.as_str(),
+                    upstream.model.as_str(),
+                    Some(response.status().as_u16()),
+                    if response.status().is_success() {
+                        None
+                    } else {
+                        Some(status_error_class(response.status().as_u16()))
+                    },
+                    Some(latency_ms),
+                    attempt_index,
+                    if response.status().is_success() {
+                        AttemptOutcome::Success
+                    } else {
+                        AttemptOutcome::HttpError
+                    },
+                );
                 log_upstream_event(
                     "result",
                     inbound,
@@ -573,6 +692,19 @@ async fn send_with_route_pool(
                 let latency_ms = start.elapsed().as_millis() as u64;
                 warn!(route = %route, error = %error, "Upstream request failed");
                 record_route_pool_failure(route_pool_state, config, &route, &error.to_string());
+                record_attempt_metric(
+                    metrics,
+                    inbound,
+                    &route,
+                    provider.name.as_str(),
+                    upstream.url.as_str(),
+                    upstream.model.as_str(),
+                    None,
+                    Some("network"),
+                    Some(latency_ms),
+                    attempt_index,
+                    AttemptOutcome::NetworkError,
+                );
                 log_upstream_event(
                     "request_failed",
                     inbound,
@@ -753,6 +885,48 @@ fn epoch_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_attempt_metric(
+    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    inbound: InboundProtocol,
+    route: &str,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    http_status: Option<u16>,
+    error_class: Option<&str>,
+    latency_ms: Option<u64>,
+    retry_attempt_index: usize,
+    outcome: AttemptOutcome,
+) {
+    let metric = UpstreamAttemptMetric {
+        timestamp_epoch_secs: epoch_secs(SystemTime::now()),
+        inbound: format!("{:?}", inbound),
+        route: route.to_string(),
+        provider: provider.to_string(),
+        endpoint: endpoint.to_string(),
+        model: model.to_string(),
+        http_status,
+        error_class: error_class.map(str::to_string),
+        latency_ms,
+        retry_attempt_index,
+        outcome,
+    };
+    if let Ok(mut metrics) = metrics.lock() {
+        metrics.record(metric);
+    }
+}
+
+fn status_error_class(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "auth",
+        429 => "rate_limit",
+        500..=599 => "server",
+        400..=499 => "client_request",
+        _ => "http_error",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1073,6 +1247,7 @@ async fn main() -> std::io::Result<()> {
         client,
         agents,
         route_pool_state: Arc::new(Mutex::new(HashMap::new())),
+        metrics: Arc::new(Mutex::new(RuntimeMetricsStore::load(1000))),
     });
     let data = web::Data::new(state);
 
@@ -1091,14 +1266,19 @@ async fn main() -> std::io::Result<()> {
             .route("/api/config", web::put().to(put_config))
             .route("/api/transformers", web::get().to(get_transformers))
             .route("/api/logs", web::get().to(get_logs))
+            .route("/api/logs/query", web::get().to(query_logs))
             .route("/api/logs", web::delete().to(delete_logs))
             .route(
                 "/api/route-pool/status",
                 web::get().to(get_route_pool_status),
             )
             .route(
-                "/api/provider-pool/status",
-                web::get().to(get_route_pool_status),
+                "/api/runtime-metrics/attempts",
+                web::get().to(get_runtime_metric_attempts),
+            )
+            .route(
+                "/api/runtime-metrics/summary",
+                web::get().to(get_runtime_metric_summary),
             )
             .route("/api/presets", web::get().to(get_presets))
             .route("/api/presets/{name}", web::get().to(get_preset))
