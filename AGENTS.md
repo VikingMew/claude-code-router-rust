@@ -58,6 +58,9 @@ Use narrower package tests while iterating, then run workspace tests before fini
 
 - Small changes can be implemented directly.
 - Complex work should get an execution plan under `docs/exec-plans/active/`.
+- Execution plans follow PDCA: the normal plan sections are Plan; record actual
+  work in Do, verification and deviations in Check, and follow-up/debt/doc
+  updates in Act.
 - Completed execution plans should record verification commands and move to `docs/exec-plans/completed/`.
 - Technical debt should be tracked in `docs/exec-plans/tech-debt-tracker.md`.
 - Historical phase files live under `docs/exec-plans/completed/legacy-phase-*.md`.

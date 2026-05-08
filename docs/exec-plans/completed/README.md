@@ -9,7 +9,8 @@ Rules:
 
 - Preserve completion evidence.
 - Preserve verification commands and results.
-- Preserve the final PDCA record, especially Check evidence and Act follow-up.
+- Preserve the final execution record: `Do / 执行记录`, `Check / 验证与偏差` and
+  `Act / 处理与沉淀`.
 - Keep old decisions for future agent navigation.
 - Do not rewrite completed plans into current architecture docs; update long-term docs separately when behavior changes.
 

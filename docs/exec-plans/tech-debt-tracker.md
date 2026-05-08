@@ -26,6 +26,31 @@
 
 ## Tracked Items
 
+### plan-005 - 长期文档现状、方向和代码/文档一致性审计
+
+**优先级：** P1
+**状态：** active
+**执行计划：** `docs/exec-plans/active/plan-005-long-term-docs-current-state-and-direction-alignment.md`
+
+影响：
+
+- 长期文档如果继续混入 CLI-first、API-first、config-file-first 或历史 routing 术语，会误导用户和智能体。
+- 已完成历史计划可保留旧术语，但当前长期文档必须准确描述现状和方向。
+- 代码和文档不一致需要集中记录处理，否则后续计划会基于错误事实推进。
+
+修正方向：
+
+- 审计长期文档并按代码事实更新当前状态。
+- 记录发展方向：UI-first、Route Pool-only、through-CCR、logs/query、真实 request/response metrics。
+- 对每个代码/文档不一致项选择修正文档、创建技术债或标注历史记录。
+
+验证方式：
+
+- `./scripts/check-docs-structure.sh` 通过。
+- README 保持 UI app 聚焦。
+- 当前长期文档不把 removed/legacy routing 行为描述为支持能力。
+- 代码/文档不一致清单有处理结果。
+
 ### plan-004 - Ubuntu/Linux UI 启动时 GTK tray/EGL 初始化崩溃
 
 **优先级：** P0

@@ -9,8 +9,9 @@ Rules:
 
 - One complex workstream per plan.
 - Use `plan-001`, `plan-002` style IDs for all new workstreams.
-- Every active plan must follow PDCA: Plan before implementation, Do during
-  implementation, Check before completion and Act before archival.
+- Every active plan must follow PDCA: the normal plan sections are `Plan`;
+  `Do / 执行记录`, `Check / 验证与偏差` and `Act / 处理与沉淀` are updated as work
+  progresses.
 - Link related debt or follow-up entries from `../tech-debt-tracker.md` when useful.
 - Keep decision logs in the plan, not in chat history.
 - Include explicit verification commands or manual QA steps.
@@ -19,3 +20,4 @@ Rules:
 ## Active Plans
 
 - `plan-001-real-request-response-metrics-alignment.md` - separates endpoint test diagnostics from real request/response metrics and request history.
+- `plan-005-long-term-docs-current-state-and-direction-alignment.md` - updates long-term docs to match current code, product state and direction, including code/doc inconsistency tracking.

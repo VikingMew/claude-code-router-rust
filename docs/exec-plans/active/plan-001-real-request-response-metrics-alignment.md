@@ -15,92 +15,6 @@ Endpoint test 是用户点击测试按钮后的主动测速/配置验证行为�
 
 本计划要把文档、指标模型、API 命名和 UI 展示重新对齐到这个边界。
 
-## PDCA
-
-### Plan
-
-Problem:
-
-- Runtime metrics、request history、response metrics 和 endpoint test 的边界仍容易混淆。
-- 历史完成口径把最小 attempt store 误读成完整 request history 的风险较高。
-
-Scope:
-
-- 纠正文档、指标模型、API 命名和 UI 展示边界。
-- 明确真实 request/attempt metrics 必须来自实际 client traffic。
-
-Non-goals:
-
-- 不删除 endpoint test。
-- 不把 endpoint test latency 用作 Route Pool health。
-- 不保存敏感请求/响应正文。
-
-Risks:
-
-- 如果缺 request id 和 request-level record，attempt metrics 仍无法构成真实 request history。
-- 如果 UI 文案继续复用 endpoint test 结果，用户会误判 provider 真实质量。
-
-Intended verification:
-
-- 文档中 endpoint test 和 runtime metrics 术语可检索区分。
-- 真实 client request 产生 request-level record。
-- endpoint test 不写入 request history。
-
-### Do
-
-Implementation steps:
-
-- 更新长期文档和历史完成偏差。
-- 扩展或拆分 metrics record。
-- 增加 request-level API 和 UI 展示边界。
-
-Files expected to change:
-
-- `docs/long-term-roadmap.md`
-- `docs/provider-runtime-metrics.md`
-- `docs/RELIABILITY.md`
-- `docs/QUALITY_SCORE.md`
-- `docs/exec-plans/tech-debt-tracker.md`
-- `crates/ccr-app-core/src/metrics.rs`
-- `crates/ccr-server/src/main.rs`
-- `crates/ccr-ui/src/status_tab.rs`
-
-### Check
-
-Verification commands:
-
-```sh
-rg -n "endpoint test history|Endpoint test history|test history" docs
-rg -n "plan-001|Request metrics|Attempt metrics|Response metrics" docs
-cargo fmt --check
-cargo test --package ccr-app-core --lib
-cargo test --package ccr-server
-cargo test --workspace
-```
-
-Manual QA:
-
-- 点击 endpoint test，确认只产生配置诊断，不进入 request history。
-- 发起真实 client request，确认 request-level record 和 attempt-level record 可关联。
-
-Observed result:
-
-- 未完成。
-
-### Act
-
-Follow-up:
-
-- 未完成后续决策。
-
-Documentation updates:
-
-- 未完成。
-
-Remaining debt:
-
-- 未完成。
-
 ## 非目标
 
 - 不删除 endpoint test 功能。
@@ -238,11 +152,43 @@ cargo test --workspace
 - Runtime summary 基于真实 request/attempt metrics，不使用 endpoint test 结果。
 - UI 文案不会把 endpoint test latency 描述为 provider health 或真实响应质量。
 
+## Do / 执行记录
+
+未开始。
+
+计划执行时记录：
+
+- 实际修改的长期文档和代码文件。
+- metrics record、API 和 UI 边界的实际实现。
+- 与本计划设计方向不同的中途决策。
+
+## Check / 验证与偏差
+
+未完成。
+
+完成前记录：
+
+- 实际运行的验证命令和结果。
+- endpoint test 是否仍被误写入或误展示为 request history。
+- 真实 client request 是否产生 request-level record。
+- 代码和文档是否仍存在术语或行为偏差。
+
+## Act / 处理与沉淀
+
+未完成。
+
+完成前记录：
+
+- 已修正的偏差。
+- 更新到长期文档的规则。
+- 仍需拆分的新技术债或后续 execution plan。
+
 ## 决策日志
 
 - 2026-05-07：计划编号改用 `plan-001` 格式，不再为新工作分配 TD 编号。
 - 2026-05-07：确认 endpoint test 是点击按钮测速/配置验证；真实响应数据采集必须来自实际 client traffic。
 - 2026-05-07：当前最小 attempt store 可以保留，但必须在文档中降级为第一块基础设施，而不是完整 request history。
+- 2026-05-08：PDCA 结构调整为：本文件原有目标/非目标/背景/设计/修改文件/验收测试即 Plan；Do/Check/Act 只记录执行、偏差和闭环。
 
 ## 完成记录
 
