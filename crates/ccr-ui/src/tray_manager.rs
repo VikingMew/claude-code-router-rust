@@ -1,5 +1,8 @@
-use std::process::Command;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use ccr_app_core::client_config::claude::activate_ccr;
+use ccr_app_core::client_config::codex::activate_codex_ccr;
+use ccr_app_core::status::{ccr_server_executable_from, start_server, stop_server};
 use ccr_config::{default_config_path, load_config, save_config};
 use ccr_types::Config;
 use tray_icon::{
@@ -32,10 +35,20 @@ impl TrayManager {
         }
     }
 
-    pub fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn init(&mut self) -> anyhow::Result<()> {
+        if tray_disabled_by_env() {
+            anyhow::bail!("system tray disabled by CCR_DISABLE_TRAY");
+        }
+        init_platform_tray()?;
+
+        catch_tray_init(AssertUnwindSafe(|| self.init_inner()))
+    }
+
+    fn init_inner(&mut self) -> anyhow::Result<()> {
         let config = load_config(&default_config_path()).unwrap_or_default();
         self.provider_routes = provider_routes_from_config(&config);
-        let menu = Self::create_menu(&self.provider_routes)?;
+        let menu = Self::create_menu(&self.provider_routes)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("Claude Code Router")
@@ -47,6 +60,10 @@ impl TrayManager {
     }
 
     pub fn poll_event(&mut self) -> TrayEvent {
+        if self.tray_icon.is_none() {
+            return TrayEvent::None;
+        }
+
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             return self.handle_menu_event(event);
         }
@@ -182,24 +199,33 @@ impl TrayManager {
             MENU_OPEN_UI | MENU_SHOW_WINDOW => TrayEvent::ShowWindow,
             MENU_HIDE_WINDOW => TrayEvent::HideWindow,
             MENU_START_SERVER => {
-                run_ccr_command("start");
+                run_server_start();
                 TrayEvent::None
             }
             MENU_STOP_SERVER => {
-                run_ccr_command("stop");
+                if let Err(error) = stop_server() {
+                    eprintln!("Failed to stop CCR server: {error}");
+                }
                 TrayEvent::None
             }
             MENU_RESTART_SERVER => {
-                run_ccr_command("restart");
+                if let Err(error) = stop_server() {
+                    eprintln!("Failed to stop CCR server: {error}");
+                }
+                run_server_start();
                 TrayEvent::None
             }
             MENU_SERVER_STATUS => TrayEvent::ShowStatus,
             MENU_INJECT_CLAUDE => {
-                run_ccr_command("claude-activate");
+                if let Err(error) = activate_ccr() {
+                    eprintln!("Failed to update Claude Code config: {error}");
+                }
                 TrayEvent::None
             }
             MENU_INJECT_CODEX => {
-                run_ccr_command("codex-activate");
+                if let Err(error) = activate_codex_ccr() {
+                    eprintln!("Failed to update Codex config: {error}");
+                }
                 TrayEvent::None
             }
             MENU_QUIT => TrayEvent::Quit,
@@ -218,22 +244,70 @@ impl TrayManager {
     }
 }
 
-fn run_ccr_command(command: &str) {
-    let executable = bundled_ccr_path().unwrap_or_else(|| "ccr".into());
-    if let Err(error) = Command::new(&executable).arg(command).spawn() {
-        eprintln!("Failed to run 'ccr {command}': {error}");
+fn tray_disabled_by_env() -> bool {
+    env_flag_enabled("CCR_DISABLE_TRAY")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| env_value_enabled(&value))
+        .unwrap_or(false)
+}
+
+fn env_value_enabled(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    !value.is_empty() && value != "0" && value != "false" && value != "no"
+}
+
+fn init_platform_tray() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        gtk::init().map_err(|error| anyhow::anyhow!("GTK init failed: {error}"))?;
+    }
+    Ok(())
+}
+
+fn catch_tray_init<F>(f: F) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<()> + std::panic::UnwindSafe,
+{
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = catch_unwind(f);
+    std::panic::set_hook(previous_hook);
+
+    match result {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = panic_payload_message(payload);
+            anyhow::bail!("system tray initialization panicked: {message}");
+        }
     }
 }
 
-fn bundled_ccr_path() -> Option<std::path::PathBuf> {
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic".to_string()
+}
+
+fn run_server_start() {
+    let Some(executable) = bundled_server_path() else {
+        eprintln!("Cannot find ccr-server executable");
+        return;
+    };
+    if let Err(error) = start_server(&executable) {
+        eprintln!("Failed to start CCR server: {error}");
+    }
+}
+
+fn bundled_server_path() -> Option<std::path::PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
-    let resources = current_exe
-        .parent()?
-        .parent()?
-        .join("Resources")
-        .join("bin");
-    let ccr = resources.join(if cfg!(windows) { "ccr.exe" } else { "ccr" });
-    ccr.exists().then_some(ccr)
+    ccr_server_executable_from(&current_exe)
 }
 
 fn provider_routes_from_config(config: &Config) -> Vec<String> {
@@ -357,5 +431,20 @@ mod tests {
         assert_eq!(provider_index_from_menu_id("provider:2"), Some(2));
         assert_eq!(provider_index_from_menu_id("provider:none"), None);
         assert_eq!(provider_index_from_menu_id("start_server"), None);
+    }
+
+    #[test]
+    fn tray_env_flag_parses_false_values() {
+        assert!(!env_value_enabled(""));
+        assert!(!env_value_enabled("0"));
+        assert!(!env_value_enabled("false"));
+        assert!(!env_value_enabled("no"));
+    }
+
+    #[test]
+    fn tray_env_flag_parses_true_values() {
+        assert!(env_value_enabled("1"));
+        assert!(env_value_enabled("true"));
+        assert!(env_value_enabled("yes"));
     }
 }

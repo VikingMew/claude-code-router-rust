@@ -1,7 +1,7 @@
 # Security
 
 **状态：** 长期安全文档
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-08
 
 ## Security Model
 
@@ -13,6 +13,11 @@ The config API should be accessible only when one of these is true:
 - the request presents the configured bearer token.
 
 When API key support is enabled, callers must use the expected Authorization header.
+
+Admin API is not part of the default product surface. `/api/admin/*` must be
+default-off. If an admin endpoint is enabled in the future, it must require an
+explicit config flag, pass the same authorization boundary, and have disabled
+and enabled behavior covered by tests.
 
 ## Secrets
 
@@ -54,12 +59,14 @@ Security-sensitive behavior:
 - upstream request header construction;
 - response body logging and truncation;
 - config API authorization.
+- admin API default-off behavior.
 
 ## Security Debt
 
 Current known follow-up areas:
 
 - Add tests for config API authorization behavior.
+- Disable `/api/admin/*` by default and require auth if explicitly enabled.
 - Add documentation for backup retention and cleanup.
 - Add structured redaction tests for future JSONL logs.
 - Review packaging scripts for install/uninstall path safety.

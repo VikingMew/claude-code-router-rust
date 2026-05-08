@@ -1,12 +1,12 @@
 use anyhow::Result;
-use ccr_cli::claude_config::{
+use ccr_app_core::client_config::claude::{
     ActivationStatus, activate_ccr, check_activation_status, deactivate_ccr,
 };
-use ccr_cli::codex_config::{
+use ccr_app_core::client_config::codex::{
     CodexActivationStatus, activate_codex_ccr, check_codex_activation_status, deactivate_codex_ccr,
 };
-use ccr_cli::{activate_output, is_process_alive, pid_file_path, read_pid, write_pid};
-use ccr_config::{default_config_path, load_config, save_config};
+use ccr_app_core::status::{is_process_alive, pid_file_path, read_pid, write_pid};
+use ccr_config::{default_config_path, load_config};
 use clap::{Parser, Subcommand};
 use std::process::Command;
 
@@ -23,9 +23,6 @@ enum Commands {
     Stop,
     Restart,
     Status,
-    /// Output shell environment variables (for manual integration)
-    #[command(name = "env")]
-    Env,
     /// Backup Claude config and switch to CCR router
     ClaudeActivate,
     /// Restore original Claude config
@@ -34,15 +31,6 @@ enum Commands {
     CodexActivate,
     /// Restore original Codex config
     CodexDeactivate,
-    Code {
-        args: Vec<String>,
-    },
-    Ui,
-    /// Show or set the default model
-    Model {
-        /// New default model (e.g. "openai,gpt-4o"). Omit to show current.
-        model: Option<String>,
-    },
     /// Manage presets
     Preset {
         #[command(subcommand)]
@@ -164,12 +152,6 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Env => {
-            let config = load_config(&default_config_path()).unwrap_or_default();
-            let port = config.port.unwrap_or(3456);
-            println!("{}", activate_output(port, config.api_key.as_deref()));
-        }
-
         Commands::ClaudeActivate => {
             if let Err(e) = activate_ccr() {
                 eprintln!("Error: {}", e);
@@ -195,46 +177,6 @@ fn main() -> Result<()> {
             if let Err(e) = deactivate_codex_ccr() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
-            }
-        }
-
-        Commands::Ui => {
-            let exe = std::env::current_exe()?.parent().unwrap().join("ccr-ui");
-            Command::new(&exe).status()?;
-        }
-
-        Commands::Model { model } => {
-            let config_path = default_config_path();
-            let mut config = load_config(&config_path).unwrap_or_default();
-            match model {
-                Some(m) => {
-                    let pool = config
-                        .route_pool
-                        .get_or_insert_with(ccr_types::RoutePoolConfig::default);
-                    pool.enabled = true;
-                    if let Some(first) = pool.candidates.first_mut() {
-                        first.route = m.clone();
-                        first.enabled = true;
-                        first.priority = 1;
-                    } else {
-                        pool.candidates.push(ccr_types::RoutePoolCandidate {
-                            route: m.clone(),
-                            enabled: true,
-                            priority: 1,
-                        });
-                    }
-                    for (index, candidate) in pool.candidates.iter_mut().enumerate() {
-                        candidate.priority = index as u32 + 1;
-                    }
-                    save_config(&config, &config_path)?;
-                    println!("Route Pool first model set to: {m}");
-                }
-                None => println!(
-                    "Route Pool first model: {}",
-                    config
-                        .first_route_pool_route()
-                        .unwrap_or("<not configured>")
-                ),
             }
         }
 
@@ -281,27 +223,6 @@ fn main() -> Result<()> {
             let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
             let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("idle");
             println!("CCR [{model}] {status}");
-        }
-
-        Commands::Code { args } => {
-            let config = load_config(&default_config_path()).unwrap_or_default();
-            let port = config.port.unwrap_or(3456);
-            // Start server if not running
-            if read_pid(&pid_path).map_or(true, |p| !is_process_alive(p)) {
-                let exe = std::env::current_exe()?
-                    .parent()
-                    .unwrap()
-                    .join("ccr-server");
-                let child = Command::new(&exe).spawn()?;
-                write_pid(&pid_path, child.id())?;
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-            let key = config.api_key.as_deref().unwrap_or("any");
-            Command::new("claude")
-                .args(&args)
-                .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
-                .env("ANTHROPIC_AUTH_TOKEN", key)
-                .status()?;
         }
     }
     Ok(())

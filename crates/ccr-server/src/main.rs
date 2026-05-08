@@ -65,7 +65,7 @@ async fn health() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({"status": "ok"}))
 }
 
-fn auth_check(req: &HttpRequest, config: &Config) -> bool {
+pub(crate) fn auth_check(req: &HttpRequest, config: &Config) -> bool {
     let peer = req
         .peer_addr()
         .map(|a| a.ip().to_string())

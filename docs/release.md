@@ -1,7 +1,7 @@
 # Release Checklist
 
 **状态：** 长期发布文档
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-08
 
 ## Scope
 
@@ -10,6 +10,14 @@ This document records the current packaging entry points and smoke checks for CC
 ## Prerequisites
 
 - Rust stable toolchain.
+- Ubuntu/Linux development and CI hosts need native libraries for the UI, tray icon,
+  TLS and X11 helpers:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libssl-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+```
+
 - macOS packaging requires macOS host tools.
 - Windows MSI packaging requires Windows host tools and WiX.
 - Release builds should start from a clean working tree.
@@ -21,6 +29,24 @@ cargo fmt --check
 cargo test --workspace
 cargo build --release
 ```
+
+## Linux UI Troubleshooting
+
+For WSL, remote desktops or machines with incomplete GPU/EGL support, start the
+desktop UI without the system tray and with Mesa software rendering:
+
+```sh
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET CCR_DISABLE_TRAY=1 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 cargo run --bin ccr-ui
+```
+
+Notes:
+
+- `CCR_DISABLE_TRAY=1` skips GTK/libappindicator tray initialization.
+- Removing `WAYLAND_DISPLAY` and setting `GDK_BACKEND=x11` avoids
+  Wayland/glutin configuration selection failures in some WSL sessions.
+- `LIBGL_ALWAYS_SOFTWARE=1` avoids relying on unavailable EGL/DRI hardware paths.
+- If no display server is available, the native UI can still fail to open; the
+  expected failure should be a display/window error, not a GTK tray panic.
 
 ## macOS App Bundle
 

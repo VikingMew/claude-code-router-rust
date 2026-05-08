@@ -2,7 +2,7 @@
 
 **状态：** 长期记录文档
 **范围：** 记录 `ccr-rust` 的长期产品方向、工程约束和后续 phase 拆分边界
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-08
 
 ## 使用方式
 
@@ -25,6 +25,8 @@
 - direct-to-provider 如果未来引入，只能作为高级可选模式，并且必须有清晰预览和回滚策略。
 
 CLI 是辅助入口，用于调试、自动化和少量运维操作；P0/P1 用户体验应优先在桌面 UI 中完成闭环。
+
+Admin API 不是近期主产品面。`/api/admin/*` 必须默认关闭；如果未来需要作为恢复或高级运维入口，必须显式启用、鉴权、测试并在文档中说明风险。近期管理能力优先通过桌面 UI、受控 config/logs/status API 和可查询日志完成。
 
 ## 架构方向
 
@@ -92,6 +94,8 @@ CLI 是辅助入口，用于调试、自动化和少量运维操作；P0/P1 用�
 - 第三阶段：Route Pool 使用真实 runtime metrics 做 health score 和排序建议。
 - 第四阶段：可选接入外部 observability sink，但本地路由不能依赖外部服务。
 
+近期重点是 UI 可见日志写入和 logs query API。Admin API 暂不作为观测或管理功能的扩展点。
+
 必须区分：
 
 - Endpoint test：主动探测，用于配置验证。
@@ -155,6 +159,7 @@ docs/exec-plans/
 - 维护基础 CI：`cargo fmt --check`、`cargo test --workspace` 和文档结构检查。
 - 保持 Route Pool-only API 命名，不恢复 `/api/provider-pool/status`。
 - 维护 logs query API，避免 UI 和智能体只能读取完整日志文件。
+- 默认关闭 `/api/admin/*`，短期不把 admin API 作为功能扩展点。
 
 ### P1
 
@@ -178,6 +183,7 @@ docs/exec-plans/
 ## 决策原则
 
 - UI 优先，CLI 辅助。
+- Admin API 默认关闭，UI 和 logs/query 优先。
 - through-CCR 默认，direct-to-provider 高级可选。
 - Route Pool 是主路由模型。
 - provider kind 影响 server upstream、endpoint test 和 transformer，不影响默认 client 注入。

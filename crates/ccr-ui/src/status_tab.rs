@@ -1,18 +1,22 @@
+use ccr_app_core::client_config::claude::{
+    activate_ccr, claude_injection_snapshot, deactivate_ccr,
+};
+use ccr_app_core::client_config::codex::{
+    activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr,
+};
+use ccr_app_core::client_config::openclaw::{
+    activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_config_path, openclaw_provider_exists,
+    openclaw_provider_present,
+};
+use ccr_app_core::client_config::opencode::{
+    activate_opencode_ccr, deactivate_opencode_ccr, opencode_config_path, opencode_provider_exists,
+    opencode_provider_present,
+};
 use ccr_app_core::settings::route_pool_config;
 use ccr_app_core::status::{
     ccr_server_executable_from, check_health,
     read_server_snapshot as read_server_snapshot_from_core, start_server, stop_server,
     AdditiveClientSnapshot, InjectionSnapshot, ServerSnapshot,
-};
-use ccr_cli::claude_config::{activate_ccr, claude_injection_snapshot, deactivate_ccr};
-use ccr_cli::codex_config::{activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr};
-use ccr_cli::openclaw_config::{
-    activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_config_path, openclaw_provider_exists,
-    openclaw_provider_present,
-};
-use ccr_cli::opencode_config::{
-    activate_opencode_ccr, deactivate_opencode_ccr, opencode_config_path, opencode_provider_exists,
-    opencode_provider_present,
 };
 use ccr_config::{default_config_path, load_config};
 use eframe::egui;

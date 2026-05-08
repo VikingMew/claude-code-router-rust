@@ -131,7 +131,7 @@ fn auto_launch_file_content(app_exe: &std::path::Path) -> String {
     }
 
     #[allow(unreachable_code)]
-    String::new()
+    app_exe.display().to_string()
 }
 
 #[cfg(test)]

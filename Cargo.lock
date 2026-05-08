@@ -1105,11 +1105,13 @@ dependencies = [
  "ccr-types",
  "chrono",
  "dirs-next",
+ "json5",
  "nix",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
+ "toml_edit 0.25.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -1120,16 +1122,10 @@ dependencies = [
  "ccr-app-core",
  "ccr-config",
  "ccr-preset",
- "ccr-types",
- "chrono",
  "clap",
- "dirs-next",
- "json5",
  "nix",
- "serde",
  "serde_json",
  "tempfile",
- "toml_edit 0.25.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -1255,7 +1251,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ccr-app-core",
- "ccr-cli",
  "ccr-config",
  "ccr-preset",
  "ccr-router",
@@ -1263,6 +1258,7 @@ dependencies = [
  "ccr-types",
  "dirs-next",
  "eframe",
+ "gtk",
  "image",
  "nix",
  "reqwest",

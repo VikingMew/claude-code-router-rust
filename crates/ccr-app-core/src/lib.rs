@@ -1,3 +1,4 @@
+pub mod client_config;
 pub mod endpoint;
 pub mod logging;
 pub mod metrics;

@@ -1,5 +1,5 @@
+use crate::status::{InjectionSnapshot, is_process_alive, pid_file_path, read_pid};
 use anyhow::{Context, Result};
-use ccr_app_core::status::InjectionSnapshot;
 use ccr_config::{default_config_path, load_config};
 use serde_json::json;
 use std::fs;
@@ -158,9 +158,9 @@ pub fn activate_codex_ccr() -> Result<()> {
     let missing_marker = codex_missing_marker_path();
     let auth_missing_marker = codex_auth_missing_marker_path();
 
-    let pid_path = crate::pid_file_path();
-    match crate::read_pid(&pid_path) {
-        Some(pid) if crate::is_process_alive(pid) => {}
+    let pid_path = pid_file_path();
+    match read_pid(&pid_path) {
+        Some(pid) if is_process_alive(pid) => {}
         _ => anyhow::bail!("CCR server is not running. Start it with 'ccr start'"),
     }
 

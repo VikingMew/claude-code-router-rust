@@ -203,6 +203,8 @@ pub struct AppSettings {
     pub claude_code_models: ClaudeCodeModelSettings,
     #[serde(default)]
     pub claude_code_models_enabled: bool,
+    #[serde(default)]
+    pub admin_api_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -219,6 +221,7 @@ impl Default for AppSettings {
             theme: String::new(),
             claude_code_models: ClaudeCodeModelSettings::default(),
             claude_code_models_enabled: false,
+            admin_api_enabled: false,
         }
     }
 }

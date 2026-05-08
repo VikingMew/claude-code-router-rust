@@ -2,7 +2,7 @@
 
 **状态：** 长期跟踪文档
 **范围：** 集中记录当前已知技术债、文档债和验证债
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-08
 
 ## 使用方式
 
@@ -25,6 +25,98 @@
 - 如果只是历史 phase 中出现旧术语，但不代表当前 runtime 行为，不需要为每个历史文件开债务；应在索引或长期文档中统一说明。
 
 ## Tracked Items
+
+### plan-004 - Ubuntu/Linux UI 启动时 GTK tray/EGL 初始化崩溃
+
+**优先级：** P0
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-004-linux-ui-startup-gtk-egl-resilience.md`
+
+影响：
+
+- `cargo run --bin ccr-ui` 在部分 Ubuntu/Linux 图形环境下会因为 GTK tray 初始化 panic 直接退出。
+- system tray 是增强能力，不应阻止主桌面 UI 启动。
+- EGL/Mesa/ZINK warning 需要有 documented fallback，否则用户无法判断是 GPU、GTK 还是 CCR 自身问题。
+
+修正方向：
+
+- 让 tray 初始化 best-effort，失败或 panic 时禁用 tray 并继续启动主 UI。
+- 支持 `CCR_DISABLE_TRAY=1` 这类调试/降级入口。
+- 文档记录 Linux UI 启动依赖和软件渲染/tray 禁用排查命令。
+
+验证方式：
+
+- tray 初始化失败不会 panic。
+- `CCR_DISABLE_TRAY=1 cargo run --bin ccr-ui` 可跳过 tray。
+- `cargo test --package ccr-ui` 和 `cargo check --package ccr-ui` 通过。
+
+完成记录：
+
+- 2026-05-08：tray 初始化改为 best-effort，Linux 下先 `gtk::init()`，并用 `catch_unwind` 隔离 GTK/tray panic。
+- 2026-05-08：新增 `CCR_DISABLE_TRAY=1`、移除 `WAYLAND_DISPLAY`/`WAYLAND_SOCKET`、`GDK_BACKEND=x11`、WSL/software rendering fallback，并在 README/release docs 中记录。
+- 2026-05-08：捕获 eframe/glutin 启动 panic，避免 WSL Wayland config selection 失败时只输出裸栈。
+- 验证：`cargo fmt --check`、`cargo test --package ccr-ui`、`cargo check --package ccr-ui`、`cargo test --workspace`、`./scripts/check-docs-structure.sh`。
+
+### plan-003 - Admin API 默认开放且分散 UI/logs 重点
+
+**优先级：** P0
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-003-admin-api-default-off-ui-logs-focus.md`
+
+影响：
+
+- `POST /api/admin/reload` 当前已注册，且 handler 中仍有 auth TODO。
+- Admin API 容易形成 UI 之外的第二套管理产品面。
+- 近期更需要把工程注意力放在桌面 UI 功能闭环、日志写入和 logs query 上。
+
+修正方向：
+
+- 默认关闭 `/api/admin/*`。
+- 如果未来保留 admin API，必须显式启用、鉴权、测试和文档化。
+- 不再把 admin API 作为短期扩展点；UI 和 logs/query 是近期主路径。
+
+验证方式：
+
+- 默认配置下 `/api/admin/reload` 不可用。
+- 显式启用后必须通过 auth check。
+- UI 使用的 config/logs/route-pool/runtime-metrics API 不受影响。
+
+完成记录：
+
+- 2026-05-08：新增 `AppSettings.admin_api_enabled`，默认 false。
+- 2026-05-08：`/api/admin/reload` disabled 返回 404，enabled 后走 auth check。
+- 验证：`cargo test --package ccr-server`、`cargo test --package ccr-types`。
+
+### plan-002 - CLI surface 与 UI 核心功能边界不清
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-002-cli-surface-boundary-and-core-extraction.md`
+
+影响：
+
+- 产品定位是桌面 UI，但 `ccr-cli` 当前仍同时承载 CLI 命令和 UI 复用的 client config 业务逻辑。
+- 新功能如果继续落在 CLI，会让 UI-first 路线偏移，并让 README/docs 把项目误读成命令行工具。
+- `env`、`code`、`model` 等命令会绕开 UI 状态、配置预览和 Route Pool 管理闭环。
+
+修正方向：
+
+- 用 `plan-002` 定义 CLI 边界：CLI 只做自动化/调试/兼容包装，不拥有 UI 核心业务实现。
+- 将 Claude/Codex/OpenCode/OpenClaw client config 逻辑迁到 `ccr-app-core` 或新专用 crate。
+- 删除或降级与 UI 主工作流冲突的 CLI 命令。
+
+验证方式：
+
+- `ccr-ui` 不再依赖 `ccr-cli` crate 获取核心 client config 业务。
+- `ccr-cli` binary 只调用非 CLI crate 的 service API。
+- README 快速开始以桌面 UI 为主，不展示 CLI-first client setup。
+
+完成记录：
+
+- 2026-05-08：client config 逻辑迁移到 `ccr-app-core::client_config`。
+- 2026-05-08：`ccr-ui` 移除 `ccr-cli` crate 依赖，tray 不再 shell 到 `ccr` 命令。
+- 2026-05-08：删除 `env`、`code`、`ui`、`model` CLI 命令。
+- 验证：`cargo test --package ccr-app-core --lib`、`cargo test --package ccr-cli`、`cargo check --package ccr-ui`。
 
 ### plan-001 - 真实响应数据采集和 endpoint test 边界混淆
 

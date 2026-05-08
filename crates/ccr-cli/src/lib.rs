@@ -1,14 +1,4 @@
-pub mod claude_config;
-pub mod codex_config;
-pub mod openclaw_config;
-pub mod opencode_config;
-
 pub use ccr_app_core::status::{is_process_alive, pid_file_path, read_pid, write_pid};
-
-pub fn activate_output(port: u16, api_key: Option<&str>) -> String {
-    let key = api_key.unwrap_or("any");
-    format!("export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}\nexport ANTHROPIC_AUTH_TOKEN={key}")
-}
 
 #[cfg(test)]
 mod tests {
@@ -46,18 +36,5 @@ mod tests {
     #[test]
     fn current_process_is_alive() {
         assert!(is_process_alive(std::process::id()));
-    }
-
-    #[test]
-    fn activate_output_format() {
-        let out = activate_output(3456, Some("sk-test"));
-        assert!(out.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:3456"));
-        assert!(out.contains("ANTHROPIC_AUTH_TOKEN=sk-test"));
-    }
-
-    #[test]
-    fn activate_output_no_key() {
-        let out = activate_output(3456, None);
-        assert!(out.contains("ANTHROPIC_AUTH_TOKEN=any"));
     }
 }
