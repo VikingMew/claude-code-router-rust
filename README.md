@@ -94,49 +94,17 @@ After starting the server from the UI:
 curl http://127.0.0.1:3456/health
 ```
 
-## Configuration
+## UI Workflows
 
-Default config path:
+Use the desktop app for normal setup and daily operation:
 
-```text
-~/.claude-code-router/config.json
-```
+- add and test upstream providers;
+- manage Route Pool candidates and priority;
+- start and stop the local CCR server;
+- connect or restore supported coding clients;
+- inspect status, diagnostics and logs.
 
-Minimal Route Pool shape:
-
-```json
-{
-  "HOST": "127.0.0.1",
-  "PORT": 3456,
-  "Providers": [
-    {
-      "name": "openai",
-      "api_base_url": "https://api.openai.com/v1/responses",
-      "api_key": "$OPENAI_API_KEY",
-      "models": ["gpt-5-codex"],
-      "api_kind": "openai_responses"
-    }
-  ],
-  "RoutePool": {
-    "enabled": true,
-    "candidates": [
-      {
-        "route": "openai,gpt-5-codex",
-        "enabled": true,
-        "priority": 1
-      }
-    ]
-  }
-}
-```
-
-Route formats:
-
-- `provider,model` means CCR always sends that upstream model.
-- `provider` means CCR uses the model from the inbound client request.
-
-Do not configure `Router.default`, `Failover`, `ProviderPool`, Primary Route or
-default route fallback. Route Pool is the primary routing model.
+Manual config-file editing is not the primary workflow.
 
 ## CLI
 
