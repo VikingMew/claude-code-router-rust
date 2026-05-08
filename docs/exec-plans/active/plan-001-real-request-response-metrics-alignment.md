@@ -3,7 +3,7 @@
 **状态：** active
 **优先级：** P1
 **计划编号：** plan-001
-**最后更新：** 2026-05-07
+**最后更新：** 2026-05-08
 
 ## 目标
 
@@ -14,6 +14,92 @@
 Endpoint test 是用户点击测试按钮后的主动测速/配置验证行为。它只能证明某个 endpoint 在一次探测里是否可用、探测延迟是多少、payload/header/stream 是否基本可用。它不能代表真实使用中的 provider 质量，也不能作为 request history 的主体。
 
 本计划要把文档、指标模型、API 命名和 UI 展示重新对齐到这个边界。
+
+## PDCA
+
+### Plan
+
+Problem:
+
+- Runtime metrics、request history、response metrics 和 endpoint test 的边界仍容易混淆。
+- 历史完成口径把最小 attempt store 误读成完整 request history 的风险较高。
+
+Scope:
+
+- 纠正文档、指标模型、API 命名和 UI 展示边界。
+- 明确真实 request/attempt metrics 必须来自实际 client traffic。
+
+Non-goals:
+
+- 不删除 endpoint test。
+- 不把 endpoint test latency 用作 Route Pool health。
+- 不保存敏感请求/响应正文。
+
+Risks:
+
+- 如果缺 request id 和 request-level record，attempt metrics 仍无法构成真实 request history。
+- 如果 UI 文案继续复用 endpoint test 结果，用户会误判 provider 真实质量。
+
+Intended verification:
+
+- 文档中 endpoint test 和 runtime metrics 术语可检索区分。
+- 真实 client request 产生 request-level record。
+- endpoint test 不写入 request history。
+
+### Do
+
+Implementation steps:
+
+- 更新长期文档和历史完成偏差。
+- 扩展或拆分 metrics record。
+- 增加 request-level API 和 UI 展示边界。
+
+Files expected to change:
+
+- `docs/long-term-roadmap.md`
+- `docs/provider-runtime-metrics.md`
+- `docs/RELIABILITY.md`
+- `docs/QUALITY_SCORE.md`
+- `docs/exec-plans/tech-debt-tracker.md`
+- `crates/ccr-app-core/src/metrics.rs`
+- `crates/ccr-server/src/main.rs`
+- `crates/ccr-ui/src/status_tab.rs`
+
+### Check
+
+Verification commands:
+
+```sh
+rg -n "endpoint test history|Endpoint test history|test history" docs
+rg -n "plan-001|Request metrics|Attempt metrics|Response metrics" docs
+cargo fmt --check
+cargo test --package ccr-app-core --lib
+cargo test --package ccr-server
+cargo test --workspace
+```
+
+Manual QA:
+
+- 点击 endpoint test，确认只产生配置诊断，不进入 request history。
+- 发起真实 client request，确认 request-level record 和 attempt-level record 可关联。
+
+Observed result:
+
+- 未完成。
+
+### Act
+
+Follow-up:
+
+- 未完成后续决策。
+
+Documentation updates:
+
+- 未完成。
+
+Remaining debt:
+
+- 未完成。
 
 ## 非目标
 

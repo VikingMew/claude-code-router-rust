@@ -9,6 +9,7 @@ Rules:
 
 - Preserve completion evidence.
 - Preserve verification commands and results.
+- Preserve the final PDCA record, especially Check evidence and Act follow-up.
 - Keep old decisions for future agent navigation.
 - Do not rewrite completed plans into current architecture docs; update long-term docs separately when behavior changes.
 

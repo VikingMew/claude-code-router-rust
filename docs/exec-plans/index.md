@@ -1,7 +1,7 @@
 # Execution Plans Index
 
 **状态：** 长期索引文档
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-08
 
 This directory is the canonical home for execution plans and technical debt tracking.
 
@@ -34,7 +34,7 @@ New complex work should use `docs/exec-plans/active/`.
 
 ## New Plan Template
 
-Use this outline for complex new work:
+Use this PDCA outline for complex new work:
 
 ```md
 # plan-001 - Title
@@ -45,6 +45,33 @@ Use this outline for complex new work:
 **最后更新：** YYYY-MM-DD
 
 ## 目标
+
+## PDCA
+
+### Plan
+
+- Problem:
+- Scope:
+- Non-goals:
+- Risks:
+- Intended verification:
+
+### Do
+
+- Implementation steps:
+- Files expected to change:
+
+### Check
+
+- Verification commands:
+- Manual QA:
+- Observed result:
+
+### Act
+
+- Follow-up:
+- Documentation updates:
+- Remaining debt:
 
 ## 非目标
 
@@ -65,7 +92,14 @@ Use this outline for complex new work:
 
 1. Create a plan under `active/`.
 2. Use `plan-001`, `plan-002` style IDs for all new workstreams.
-3. Link it from `tech-debt-tracker.md` when it resolves or advances a debt item.
-4. Keep progress and decisions in the plan.
-5. Move the plan to `completed/` when implemented and verified.
-6. Update `tech-debt-tracker.md` with completion evidence.
+3. Fill the PDCA section before implementation starts. At minimum, `Plan` must
+   state the problem, scope, non-goals, risks and intended verification.
+4. During implementation, update `Do` with actual steps and changed files.
+5. Before completion, update `Check` with verification commands, manual QA and
+   observed results.
+6. Before moving to `completed/`, update `Act` with follow-up decisions,
+   documentation changes and remaining debt.
+7. Link it from `tech-debt-tracker.md` when it resolves or advances a debt item.
+8. Keep progress and decisions in the plan, not only in chat history.
+9. Move the plan to `completed/` when implemented and verified.
+10. Update `tech-debt-tracker.md` with completion evidence.
