@@ -66,6 +66,19 @@ struct RuntimeMetricSummary {
     last_error_class: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct TtftMetricSummary {
+    route: String,
+    provider: String,
+    model: String,
+    samples: u64,
+    average_ttft_ms: Option<u64>,
+    p50_ttft_ms: Option<u64>,
+    p90_ttft_ms: Option<u64>,
+    p95_ttft_ms: Option<u64>,
+    latest_ttft_ms: Option<u64>,
+}
+
 pub struct StatusTab {
     snapshot: StatusSnapshot,
     health_status: String,
@@ -82,6 +95,7 @@ pub struct StatusTab {
     server_operation_checking: bool,
     route_pool_status: Option<Result<RoutePoolStatusResponse, String>>,
     runtime_metrics_summary: Option<Result<Vec<RuntimeMetricSummary>, String>>,
+    ttft_metrics_summary: Option<Result<Vec<TtftMetricSummary>, String>>,
     route_pool_last_refresh: Option<Instant>,
 }
 
@@ -103,6 +117,7 @@ impl StatusTab {
             server_operation_checking: false,
             route_pool_status: None,
             runtime_metrics_summary: None,
+            ttft_metrics_summary: None,
             route_pool_last_refresh: None,
         };
         tab.refresh_snapshot();
@@ -322,12 +337,25 @@ impl StatusTab {
                     );
                 }
                 None => {
-                    ui.label("Runtime metrics: Not loaded yet.");
+                    ui.label("Real traffic metrics: Not loaded yet.");
+                }
+            }
+            match &self.ttft_metrics_summary {
+                Some(Ok(summary)) => show_ttft_metrics_summary(ui, summary),
+                Some(Err(error)) => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!("TTFT metrics unavailable: {error}"),
+                    );
+                }
+                None => {
+                    ui.label("TTFT metrics from real client traffic: Not loaded yet.");
                 }
             }
         } else {
             self.route_pool_status = None;
             self.runtime_metrics_summary = None;
+            self.ttft_metrics_summary = None;
             self.route_pool_last_refresh = None;
             ui.label("Route Pool runtime: Unavailable while server is stopped.");
         }
@@ -346,6 +374,7 @@ impl StatusTab {
         let port = self.snapshot.server.port();
         self.route_pool_status = Some(fetch_route_pool_status(port, api_key));
         self.runtime_metrics_summary = Some(fetch_runtime_metrics_summary(port, api_key));
+        self.ttft_metrics_summary = Some(fetch_ttft_metrics_summary(port, api_key));
         self.route_pool_last_refresh = Some(now);
     }
 
@@ -680,6 +709,35 @@ fn fetch_runtime_metrics_summary(
     response.json().map_err(|error| error.to_string())
 }
 
+fn fetch_ttft_metrics_summary(
+    port: u16,
+    api_key: Option<&str>,
+) -> Result<Vec<TtftMetricSummary>, String> {
+    let url = format!(
+        "http://127.0.0.1:{}/api/runtime-metrics/ttft-summary?window=300",
+        port
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client.get(&url);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        if response.status().as_u16() == 401 {
+            return Err(
+                "unauthorized. The UI config API key does not match the running server."
+                    .to_string(),
+            );
+        }
+        return Err(format!("HTTP {}", response.status()));
+    }
+    response.json().map_err(|error| error.to_string())
+}
+
 fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) {
     ui.label(format!(
         "Route Pool runtime: enabled={}, policy {} failures, {}s ban",
@@ -719,9 +777,9 @@ fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) 
 }
 
 fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RuntimeMetricSummary]) {
-    ui.label("Runtime metrics:");
+    ui.label("Runtime metrics from real client traffic:");
     if summary.is_empty() {
-        ui.label("No upstream attempts recorded.");
+        ui.label("No real upstream attempts recorded.");
         return;
     }
     let mut rows = summary.iter().collect::<Vec<_>>();
@@ -740,6 +798,40 @@ fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RuntimeMetricSumma
             }
             if let Some(error_class) = &item.last_error_class {
                 ui.label(format!("Last error: {error_class}"));
+            }
+        });
+    }
+}
+
+fn show_ttft_metrics_summary(ui: &mut egui::Ui, summary: &[TtftMetricSummary]) {
+    ui.label("TTFT from real client traffic (5m window):");
+    if summary.is_empty() {
+        ui.label("No real TTFT samples recorded.");
+        return;
+    }
+    let mut rows = summary.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.route.cmp(&right.route));
+    for item in rows {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "{} / {} ({})",
+                item.route, item.model, item.provider
+            ));
+            ui.label(format!("Samples: {}", item.samples));
+            if let Some(avg) = item.average_ttft_ms {
+                ui.label(format!("Avg: {avg}ms"));
+            }
+            if let Some(p50) = item.p50_ttft_ms {
+                ui.label(format!("P50: {p50}ms"));
+            }
+            if let Some(p90) = item.p90_ttft_ms {
+                ui.label(format!("P90: {p90}ms"));
+            }
+            if let Some(p95) = item.p95_ttft_ms {
+                ui.label(format!("P95: {p95}ms"));
+            }
+            if let Some(latest) = item.latest_ttft_ms {
+                ui.label(format!("Latest: {latest}ms"));
             }
         });
     }

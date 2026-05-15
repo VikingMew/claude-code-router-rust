@@ -9,6 +9,8 @@ Provider 指标必须来自真实业务请求，而不是只来自 endpoint test
 
 Endpoint test 只能说明“某个 endpoint 在一次探测中是否可用、探测延迟是多少”。真实 provider 质量需要在 Claude Code、Codex、OpenCode、OpenClaw 等 client 请求经过 CCR server 时持续采集。
 
+当前实现已经开始记录真实 request/attempt history，并用 request id 关联一个 client request 内的 upstream attempts。TTFT sliding window 已基于真实 API 调用采集；stream chunk timing、token throughput、长期窗口聚合和外部 sink 仍属于后续工作。
+
 指标归属对象是：
 
 - provider
@@ -28,6 +30,7 @@ Endpoint test 只能说明“某个 endpoint 在一次探测中是否可用、�
 ### 识别维度
 
 - request start time
+- request id
 - selected route
 - provider
 - endpoint
@@ -461,6 +464,8 @@ Endpoint test 是主动探测，runtime metrics 是真实请求观测。
 
 - Endpoint test 用于配置前验证 endpoint、headers、payload 和 stream 支持。
 - Runtime metrics 用于真实 provider 质量、Route Pool 健康和趋势判断。
+- Request history 只记录真实 client request 和 upstream attempts，不记录 endpoint test。
+- TTFT window 只使用真实 API 调用产生的 samples，不使用 endpoint test latency。
 - Endpoint test 结果可以作为初始提示，但不能替代真实请求指标。
 
 ## 设计原则

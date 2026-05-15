@@ -89,7 +89,8 @@ Notes:
 
 ## Long-Term Reliability Work
 
-- Runtime metrics store for request and attempt metrics.
+- Runtime metrics store for real client request metrics and upstream attempt metrics.
+- Response metrics for first byte latency, stream timing and token throughput; real API TTFT window is available.
 - Route Pool health score based on real traffic.
 - Structured log query API.
 - Agent-friendly local run script with isolated config and logs.

@@ -106,3 +106,4 @@ cargo test --workspace
 - 已在 Status 页展示 summary，超出第一版 API-only 的最低要求。
 - 未把 runtime metrics 接入 Route Pool health score 或排序建议，Route Pool 当前行为保持不变。
 - 未实现 request-level metrics、token metrics、长期窗口聚合或外部 metrics sink。
+- 后续 `plan-001` 补齐 request id、request-level record 和真实 request/attempt 关联；TD-008 本身不应被解读为完整 response metrics 实现。

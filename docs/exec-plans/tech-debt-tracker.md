@@ -2,7 +2,7 @@
 
 **状态：** 长期跟踪文档
 **范围：** 集中记录当前已知技术债、文档债和验证债
-**最后验证：** 2026-05-08
+**最后验证：** 2026-05-13
 
 ## 使用方式
 
@@ -10,7 +10,7 @@
 
 每个条目应包含：
 
-- ID：稳定编号，便于 execution plan 和 PR 引用。
+- ID：稳定编号。新条目使用 `plan-001`、`plan-002` 这套编号，便于 execution plan 和 PR 引用。
 - 优先级：P0 / P1 / P2 / 后期。
 - 状态：open / active / blocked / resolved。
 - 影响：为什么它会影响用户、维护者或智能体。
@@ -50,6 +50,36 @@
 - README 保持 UI app 聚焦。
 - 当前长期文档不把 removed/legacy routing 行为描述为支持能力。
 - 代码/文档不一致清单有处理结果。
+
+### plan-006 - 真实 API 调用 TTFT 滑动窗口
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-006-real-api-ttft-sliding-window.md`
+
+影响：
+
+- 真实 provider 响应速度不能只看 endpoint test 点击测速。
+- 当前 request/attempt history 还缺 TTFT，无法判断真实流式首 token 体验。
+- Route Pool health 和用户诊断后续需要基于真实 API 调用的窗口指标。
+
+修正方向：
+
+- 在真实 `/v1/messages` 和 `/v1/responses` upstream response 路径采集 TTFT。
+- 将 TTFT sample 写入 attempt metrics，并通过 request id 关联 request history。
+- 增加真实流量 TTFT sliding window summary API。
+- 明确排除 endpoint test latency。
+
+验证方式：
+
+- endpoint test 不产生 TTFT sample。
+- 真实 streaming API 调用产生 TTFT sample。
+- `/api/runtime-metrics/ttft-summary?window=300` 返回真实流量窗口聚合。
+
+完成记录：
+
+- 2026-05-13：新增 attempt TTFT 字段、TTFT sliding window summary、`/api/runtime-metrics/ttft-summary` 和 Status UI TTFT 展示。
+- 验证：`cargo fmt --check`、`cargo test --package ccr-app-core --lib`、`cargo test --package ccr-server`、`cargo test --package ccr-ui` 通过。
 
 ### plan-004 - Ubuntu/Linux UI 启动时 GTK tray/EGL 初始化崩溃
 
@@ -146,8 +176,8 @@
 ### plan-001 - 真实响应数据采集和 endpoint test 边界混淆
 
 **优先级：** P1
-**状态：** active
-**执行计划：** `docs/exec-plans/active/plan-001-real-request-response-metrics-alignment.md`
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-001-real-request-response-metrics-alignment.md`
 
 影响：
 
@@ -167,6 +197,11 @@
 - 真实 client request 产生 request-level record。
 - upstream retry 产生可关联的 attempt-level record。
 - Runtime summary 不使用 endpoint test 结果。
+
+完成记录：
+
+- 2026-05-13：新增 request-level metrics、attempt request id correlation 和 `/api/runtime-metrics/requests`。
+- 验证：`cargo fmt --check`、`cargo test --package ccr-app-core --lib`、`cargo test --package ccr-server`、`cargo test --package ccr-ui`、`cargo test --workspace` 通过。
 
 ### TD-001 - 缺少 AGENTS.md 智能体入口地图
 

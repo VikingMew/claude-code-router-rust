@@ -3,7 +3,9 @@ mod handlers;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use ccr_agent::{Agent, ImageAgent};
 use ccr_app_core::logging::LogQuery;
-use ccr_app_core::metrics::{AttemptOutcome, RuntimeMetricsStore, UpstreamAttemptMetric};
+use ccr_app_core::metrics::{
+    AttemptOutcome, ClientRequestMetric, RequestOutcome, RuntimeMetricsStore, UpstreamAttemptMetric,
+};
 use ccr_config::{ReloadableConfig, default_config_path, load_config, save_config};
 use ccr_preset::{delete_preset, list_presets, load_preset};
 use ccr_router::find_provider;
@@ -20,9 +22,12 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+static NEXT_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub struct AppState {
     reloadable_config: Arc<ReloadableConfig>,
@@ -207,6 +212,27 @@ async fn get_runtime_metric_attempts(
     HttpResponse::Ok().json(attempts)
 }
 
+async fn get_runtime_metric_requests(
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(100);
+    let requests = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.recent_requests(limit))
+        .unwrap_or_default();
+    HttpResponse::Ok().json(requests)
+}
+
 async fn get_runtime_metric_summary(
     req: HttpRequest,
     state: web::Data<Arc<AppState>>,
@@ -219,6 +245,29 @@ async fn get_runtime_metric_summary(
         .metrics
         .lock()
         .map(|metrics| metrics.summary())
+        .unwrap_or_default();
+    HttpResponse::Ok().json(summary)
+}
+
+async fn get_runtime_metric_ttft_summary(
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let window_seconds = query
+        .get("window")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300)
+        .max(1);
+    let now = epoch_secs(SystemTime::now());
+    let summary = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.ttft_summary(window_seconds, now))
         .unwrap_or_default();
     HttpResponse::Ok().json(summary)
 }
@@ -324,7 +373,7 @@ async fn messages(
     let config_clone = config.clone();
     let body_json: serde_json::Value = serde_json::to_value(&msg_req).unwrap();
 
-    let upstream_res = match send_with_route_pool(
+    let mut upstream_res = match send_with_route_pool(
         &state.client,
         &config,
         &state.transformers,
@@ -347,6 +396,12 @@ async fn messages(
         // Check if we need tool interception
         if let Some(agent) = agent_handling {
             // Use tool interception pipeline
+            record_pending_attempt_ttft(
+                &state.metrics,
+                upstream_res.pending_attempt_metric.take(),
+                upstream_res.attempt_started_at,
+                "stream_interception_response_headers",
+            );
             match process_with_tool_interception(
                 upstream_res.response,
                 agent,
@@ -370,10 +425,12 @@ async fn messages(
         }
 
         // Normal passthrough streaming
-        let stream = upstream_res
-            .response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(|e| actix_web::error::ErrorBadGateway(e)));
+        let stream = stream_response_with_ttft(
+            upstream_res.response,
+            state.metrics.clone(),
+            upstream_res.pending_attempt_metric.take(),
+            upstream_res.attempt_started_at,
+        );
         HttpResponse::build(status)
             .content_type("text/event-stream")
             .insert_header(("cache-control", "no-cache"))
@@ -423,7 +480,7 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
         &[("route", route_for_display(&model_str))],
     );
 
-    let upstream_res = match send_with_route_pool(
+    let mut upstream_res = match send_with_route_pool(
         &state.client,
         &config,
         &state.transformers,
@@ -443,10 +500,12 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
         .unwrap_or(actix_web::http::StatusCode::OK);
 
     if upstream_res.stream {
-        let stream = upstream_res
-            .response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(|e| actix_web::error::ErrorBadGateway(e)));
+        let stream = stream_response_with_ttft(
+            upstream_res.response,
+            state.metrics.clone(),
+            upstream_res.pending_attempt_metric.take(),
+            upstream_res.attempt_started_at,
+        );
         HttpResponse::build(status)
             .content_type("text/event-stream")
             .insert_header(("cache-control", "no-cache"))
@@ -465,6 +524,17 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
 struct UpstreamAttemptResponse {
     response: reqwest::Response,
     stream: bool,
+    pending_attempt_metric: Option<UpstreamAttemptMetric>,
+    attempt_started_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestMetricContext {
+    request_id: String,
+    started_epoch_secs: u64,
+    started_at: Instant,
+    inbound: InboundProtocol,
+    requested_model: String,
 }
 
 async fn send_with_route_pool(
@@ -474,17 +544,36 @@ async fn send_with_route_pool(
     route_pool_state: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
     metrics: &Arc<Mutex<RuntimeMetricsStore>>,
     inbound: InboundProtocol,
-    _primary_route: &str,
+    requested_model: &str,
     body_json: serde_json::Value,
 ) -> Result<UpstreamAttemptResponse, String> {
+    let request_context = RequestMetricContext {
+        request_id: next_request_id(),
+        started_epoch_secs: epoch_secs(SystemTime::now()),
+        started_at: Instant::now(),
+        inbound,
+        requested_model: requested_model.to_string(),
+    };
     let pool_enabled = route_pool_enabled(config);
     let configured_pool_routes = route_pool_candidates(config, &[]);
     if !pool_enabled || configured_pool_routes.is_empty() {
+        record_request_metric(
+            metrics,
+            &request_context,
+            "",
+            "",
+            "",
+            None,
+            Some("route_pool"),
+            0,
+            RequestOutcome::Failed,
+        );
         return Err("Route Pool is not configured or has no enabled routes".to_string());
     }
 
     let mut attempts = configured_pool_routes.clone();
     let mut last_error = None;
+    let mut attempted_count = 0usize;
 
     let now = SystemTime::now();
     attempts.retain(|route| {
@@ -500,11 +589,13 @@ async fn send_with_route_pool(
     });
 
     for (attempt_index, route) in attempts.into_iter().enumerate() {
+        attempted_count += 1;
         let Some(provider) = find_provider(&route, config) else {
             let error = provider_not_found_message(&route, config);
             record_route_pool_failure(route_pool_state, config, &route, &error);
             record_attempt_metric(
                 metrics,
+                request_context.request_id.as_str(),
                 inbound,
                 &route,
                 "",
@@ -561,6 +652,7 @@ async fn send_with_route_pool(
                 record_route_pool_failure(route_pool_state, config, &route, &error);
                 record_attempt_metric(
                     metrics,
+                    request_context.request_id.as_str(),
                     inbound,
                     &route,
                     provider.name.as_str(),
@@ -631,6 +723,7 @@ async fn send_with_route_pool(
                     );
                     record_attempt_metric(
                         metrics,
+                        request_context.request_id.as_str(),
                         inbound,
                         &route,
                         provider.name.as_str(),
@@ -647,8 +740,8 @@ async fn send_with_route_pool(
                 if response.status().is_success() {
                     record_route_pool_success(route_pool_state, &route);
                 }
-                record_attempt_metric(
-                    metrics,
+                let mut attempt_metric = upstream_attempt_metric(
+                    request_context.request_id.as_str(),
                     inbound,
                     &route,
                     provider.name.as_str(),
@@ -668,6 +761,11 @@ async fn send_with_route_pool(
                         AttemptOutcome::HttpError
                     },
                 );
+                if !upstream.stream {
+                    attempt_metric.ttft_ms = Some(latency_ms);
+                    attempt_metric.ttft_source = Some("non_stream_response".to_string());
+                    record_prepared_attempt_metric(metrics, attempt_metric.clone());
+                }
                 log_upstream_event(
                     "result",
                     inbound,
@@ -683,9 +781,34 @@ async fn send_with_route_pool(
                     None,
                     &[],
                 );
+                record_request_metric(
+                    metrics,
+                    &request_context,
+                    &route,
+                    provider.name.as_str(),
+                    upstream.model.as_str(),
+                    Some(response.status().as_u16()),
+                    if response.status().is_success() {
+                        None
+                    } else {
+                        Some(status_error_class(response.status().as_u16()))
+                    },
+                    attempted_count,
+                    if response.status().is_success() {
+                        RequestOutcome::Success
+                    } else {
+                        RequestOutcome::HttpError
+                    },
+                );
                 return Ok(UpstreamAttemptResponse {
                     response,
                     stream: upstream.stream,
+                    pending_attempt_metric: if upstream.stream {
+                        Some(attempt_metric)
+                    } else {
+                        None
+                    },
+                    attempt_started_at: if upstream.stream { Some(start) } else { None },
                 });
             }
             Err(error) => {
@@ -694,6 +817,7 @@ async fn send_with_route_pool(
                 record_route_pool_failure(route_pool_state, config, &route, &error.to_string());
                 record_attempt_metric(
                     metrics,
+                    request_context.request_id.as_str(),
                     inbound,
                     &route,
                     provider.name.as_str(),
@@ -728,6 +852,17 @@ async fn send_with_route_pool(
     let error = last_error
         .or_else(|| last_route_pool_error(route_pool_state, &configured_pool_routes))
         .unwrap_or_else(|| "No upstream routes attempted".to_string());
+    record_request_metric(
+        metrics,
+        &request_context,
+        "<route-pool>",
+        "",
+        "",
+        None,
+        Some("route_pool_exhausted"),
+        attempted_count,
+        RequestOutcome::Failed,
+    );
     log_route_pool_event("route_pool_exhausted", "<route-pool>", &error, None);
     log_upstream_event(
         "final_failure",
@@ -887,9 +1022,51 @@ fn epoch_secs(time: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+fn next_request_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = NEXT_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("req-{now}-{sequence}")
+}
+
+fn stream_response_with_ttft(
+    response: reqwest::Response,
+    metrics: Arc<Mutex<RuntimeMetricsStore>>,
+    mut pending_attempt_metric: Option<UpstreamAttemptMetric>,
+    attempt_started_at: Option<Instant>,
+) -> impl futures_util::Stream<Item = Result<web::Bytes, actix_web::Error>> {
+    response.bytes_stream().map(move |chunk| {
+        if chunk.is_ok() {
+            record_pending_attempt_ttft(
+                &metrics,
+                pending_attempt_metric.take(),
+                attempt_started_at,
+                "stream_first_chunk",
+            );
+        }
+        chunk.map_err(actix_web::error::ErrorBadGateway)
+    })
+}
+
+fn record_pending_attempt_ttft(
+    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    pending_attempt_metric: Option<UpstreamAttemptMetric>,
+    attempt_started_at: Option<Instant>,
+    source: &str,
+) {
+    if let (Some(mut metric), Some(started_at)) = (pending_attempt_metric, attempt_started_at) {
+        metric.ttft_ms = Some(started_at.elapsed().as_millis() as u64);
+        metric.ttft_source = Some(source.to_string());
+        record_prepared_attempt_metric(metrics, metric);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_attempt_metric(
     metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    request_id: &str,
     inbound: InboundProtocol,
     route: &str,
     provider: &str,
@@ -901,7 +1078,38 @@ fn record_attempt_metric(
     retry_attempt_index: usize,
     outcome: AttemptOutcome,
 ) {
-    let metric = UpstreamAttemptMetric {
+    let metric = upstream_attempt_metric(
+        request_id,
+        inbound,
+        route,
+        provider,
+        endpoint,
+        model,
+        http_status,
+        error_class,
+        latency_ms,
+        retry_attempt_index,
+        outcome,
+    );
+    record_prepared_attempt_metric(metrics, metric);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upstream_attempt_metric(
+    request_id: &str,
+    inbound: InboundProtocol,
+    route: &str,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    http_status: Option<u16>,
+    error_class: Option<&str>,
+    latency_ms: Option<u64>,
+    retry_attempt_index: usize,
+    outcome: AttemptOutcome,
+) -> UpstreamAttemptMetric {
+    UpstreamAttemptMetric {
+        request_id: request_id.to_string(),
         timestamp_epoch_secs: epoch_secs(SystemTime::now()),
         inbound: format!("{:?}", inbound),
         route: route.to_string(),
@@ -911,11 +1119,51 @@ fn record_attempt_metric(
         http_status,
         error_class: error_class.map(str::to_string),
         latency_ms,
+        ttft_ms: None,
+        ttft_source: None,
         retry_attempt_index,
+        outcome,
+    }
+}
+
+fn record_prepared_attempt_metric(
+    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    metric: UpstreamAttemptMetric,
+) {
+    if let Ok(mut metrics) = metrics.lock() {
+        metrics.record(metric);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_request_metric(
+    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    context: &RequestMetricContext,
+    selected_route: &str,
+    final_provider: &str,
+    final_model: &str,
+    http_status: Option<u16>,
+    error_class: Option<&str>,
+    attempt_count: usize,
+    outcome: RequestOutcome,
+) {
+    let metric = ClientRequestMetric {
+        request_id: context.request_id.clone(),
+        started_epoch_secs: context.started_epoch_secs,
+        finished_epoch_secs: epoch_secs(SystemTime::now()),
+        inbound: format!("{:?}", context.inbound),
+        requested_model: context.requested_model.clone(),
+        selected_route: selected_route.to_string(),
+        final_provider: final_provider.to_string(),
+        final_model: final_model.to_string(),
+        http_status,
+        error_class: error_class.map(str::to_string),
+        total_latency_ms: context.started_at.elapsed().as_millis() as u64,
+        attempt_count,
         outcome,
     };
     if let Ok(mut metrics) = metrics.lock() {
-        metrics.record(metric);
+        metrics.record_request(metric);
     }
 }
 
@@ -1277,8 +1525,16 @@ async fn main() -> std::io::Result<()> {
                 web::get().to(get_runtime_metric_attempts),
             )
             .route(
+                "/api/runtime-metrics/requests",
+                web::get().to(get_runtime_metric_requests),
+            )
+            .route(
                 "/api/runtime-metrics/summary",
                 web::get().to(get_runtime_metric_summary),
+            )
+            .route(
+                "/api/runtime-metrics/ttft-summary",
+                web::get().to(get_runtime_metric_ttft_summary),
             )
             .route("/api/presets", web::get().to(get_presets))
             .route("/api/presets/{name}", web::get().to(get_preset))

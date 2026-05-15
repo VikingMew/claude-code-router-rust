@@ -1,7 +1,7 @@
 # Active Execution Plans
 
 **状态：** active index
-**最后验证：** 2026-05-08
+**最后验证：** 2026-05-13
 
 Active execution plans live here.
 
@@ -19,5 +19,4 @@ Rules:
 
 ## Active Plans
 
-- `plan-001-real-request-response-metrics-alignment.md` - separates endpoint test diagnostics from real request/response metrics and request history.
 - `plan-005-long-term-docs-current-state-and-direction-alignment.md` - updates long-term docs to match current code, product state and direction, including code/doc inconsistency tracking.

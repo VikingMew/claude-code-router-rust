@@ -90,7 +90,7 @@ Admin API 不是近期主产品面。`/api/admin/*` 必须默认关闭；如果�
 目标分层：
 
 - 第一阶段：结构化 JSONL app log、过滤 API、按 target/event/route/provider 查询。
-- 第二阶段：本地 metrics store，记录 request metrics 和 attempt metrics。
+- 第二阶段：本地 metrics store，记录真实 client request metrics 和 upstream attempt metrics，并通过 request id 关联。
 - 第三阶段：Route Pool 使用真实 runtime metrics 做 health score 和排序建议。
 - 第四阶段：可选接入外部 observability sink，但本地路由不能依赖外部服务。
 
@@ -100,6 +100,7 @@ Admin API 不是近期主产品面。`/api/admin/*` 必须默认关闭；如果�
 
 - Endpoint test：主动探测，用于配置验证。
 - Runtime metrics：真实请求观测，用于 provider 质量和 Route Pool 健康。
+- Response metrics：真实请求返回路径上的 first byte、TTFT、总耗时、stream chunk 和 token throughput 等指标；它们不能从 endpoint test 推断。当前已实现真实 API TTFT window，stream timing 和 token throughput 仍待补齐。
 
 ### 5. UI 逻辑继续下沉到 app-core
 
@@ -167,14 +168,14 @@ docs/exec-plans/
 - 将新的复杂工作放入 `docs/exec-plans/active/`。
 - 将 UI 中仍然直接处理的业务逻辑继续迁移到 `ccr-app-core`。
 - 为 Route Pool runtime state 增加清除 ban、event history 和最小 health summary。
-- 为真实 request/attempt history 增加更完整的查询和 UI。
+- 为真实 request/attempt history 增加更完整的查询和 UI，继续补 first byte、stream timing 和 token throughput。
 
 ### 后期
 
 - Provider store / database。
 - Universal Provider。
 - 完整 import/export。
-- Runtime metrics store。
+- Runtime metrics 外部 sink 和长期窗口聚合。
 - Session 管理。
 - MCP / Skills 管理。
 - WebDAV 或其他配置同步。

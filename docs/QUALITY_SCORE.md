@@ -1,7 +1,7 @@
 # Quality Score
 
 **状态：** 长期质量评分文档
-**最后验证：** 2026-05-08
+**最后验证：** 2026-05-13
 
 This is a lightweight scorecard for judging whether the repository is becoming easier for users and agents to maintain.
 
@@ -14,7 +14,7 @@ This is a lightweight scorecard for judging whether the repository is becoming e
 | UI/core separation | 6/10 | `ccr-app-core` exists, but UI still owns some operation logic. |
 | Routing model clarity | 8/10 | Route Pool is current model; provider-pool status alias has been removed. |
 | Client injection clarity | 6/10 | Multiple clients supported; unified client abstraction still missing. |
-| Observability | 6/10 | Structured log query and minimal runtime metrics exist; request-level response metrics are still active work. |
+| Observability | 7/10 | Structured log query, request/attempt history and real-traffic TTFT windows exist; token and stream quality metrics remain incomplete. |
 | Documentation system | 7/10 | Docs index, execution-plan structure and tech debt tracker exist. |
 | Release process | 5/10 | Packaging scripts and release checklist exist; signing/notarization and platform smoke automation are incomplete. |
 
@@ -39,7 +39,7 @@ P1:
 
 - Add docs/plans index validation.
 - Move more UI behavior into app-core.
-- Complete request-level runtime metrics alignment.
+- Complete remaining response metrics such as token throughput and stream quality windows.
 
 P2:
 

@@ -1,7 +1,7 @@
 # Completed Execution Plans
 
 **状态：** completed index
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-13
 
 Completed execution plans live here.
 
@@ -15,3 +15,8 @@ Rules:
 - Do not rewrite completed plans into current architecture docs; update long-term docs separately when behavior changes.
 
 Historical top-level phase files were migrated here as `legacy-phase-*.md`.
+
+## Recent Plans
+
+- `plan-006-real-api-ttft-sliding-window.md` - computes TTFT sliding windows from real API traffic, excluding manual endpoint tests.
+- `plan-001-real-request-response-metrics-alignment.md` - separates endpoint test diagnostics from real request/attempt history and adds request id correlation.

@@ -92,3 +92,4 @@ cargo test --workspace
 - 未保存完整 prompt/response body，避免引入隐私和密钥泄漏风险。
 - 没有独立 Request History UI；Status 页只展示 summary。
 - 曾短暂实现 endpoint test history helper；已撤回，避免把配置探测误当成历史请求记录。
+- 后续 `plan-001` 将 request history 纠正为真实 client request record + upstream attempt correlation，而不是 endpoint test 历史或简单 attempt 列表。
