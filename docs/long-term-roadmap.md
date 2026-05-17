@@ -2,7 +2,7 @@
 
 **状态：** 长期记录文档
 **范围：** 记录 `ccr-rust` 的长期产品方向、工程约束和后续 phase 拆分边界
-**最后验证：** 2026-05-08
+**最后验证：** 2026-05-17
 
 ## 使用方式
 
@@ -77,7 +77,7 @@ Admin API 不是近期主产品面。`/api/admin/*` 必须默认关闭；如果�
 - provider create/update/delete 的结构化 API。
 - current provider 或 current route 的持久语义。
 - provider 分类、排序、icon、metadata。
-- provider API kind 的显式/推断状态在 UI、server、endpoint test 中保持一致。
+- provider API kind 的显式/推断状态在 UI、server、endpoint test 中保持一致；三种主 API 形态的长期边界见 `docs/provider-api-kinds.md`。
 - endpoint candidates 和 runtime metrics 联动。
 - preset/profile 应能生成 provider、Route Pool、client mapping 和 required env。
 
@@ -132,6 +132,7 @@ docs/
   RELIABILITY.md
   SECURITY.md
   client-model-mapping.md
+  provider-api-kinds.md
   provider-runtime-metrics.md
   cc-switch-feature-gap-analysis.md
   ccr-original-feature-gap-analysis.md

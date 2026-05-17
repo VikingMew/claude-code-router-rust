@@ -667,7 +667,7 @@ fn fetch_route_pool_status(
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
+    if let Some(api_key) = normalized_api_key(api_key) {
         request = request.bearer_auth(api_key);
     }
     let response = request.send().map_err(|error| error.to_string())?;
@@ -693,7 +693,7 @@ fn fetch_runtime_metrics_summary(
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
+    if let Some(api_key) = normalized_api_key(api_key) {
         request = request.bearer_auth(api_key);
     }
     let response = request.send().map_err(|error| error.to_string())?;
@@ -722,7 +722,7 @@ fn fetch_ttft_metrics_summary(
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
+    if let Some(api_key) = normalized_api_key(api_key) {
         request = request.bearer_auth(api_key);
     }
     let response = request.send().map_err(|error| error.to_string())?;
@@ -736,6 +736,10 @@ fn fetch_ttft_metrics_summary(
         return Err(format!("HTTP {}", response.status()));
     }
     response.json().map_err(|error| error.to_string())
+}
+
+fn normalized_api_key(api_key: Option<&str>) -> Option<&str> {
+    api_key.map(str::trim).filter(|key| !key.is_empty())
 }
 
 fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) {
@@ -1069,5 +1073,13 @@ mod tests {
         }
         .is_activated());
         assert!(InjectionSnapshot::InjectedNoBackup.has_current_injection());
+    }
+
+    #[test]
+    fn normalized_api_key_ignores_blank_values() {
+        assert_eq!(normalized_api_key(None), None);
+        assert_eq!(normalized_api_key(Some("")), None);
+        assert_eq!(normalized_api_key(Some("  ")), None);
+        assert_eq!(normalized_api_key(Some(" secret ")), Some("secret"));
     }
 }

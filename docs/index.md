@@ -1,7 +1,7 @@
 # Documentation Index
 
 **状态：** 长期索引文档
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-17
 
 This index is the main entry point for repository knowledge. Prefer reading the smallest relevant document instead of scanning every file.
 
@@ -19,6 +19,7 @@ This index is the main entry point for repository knowledge. Prefer reading the 
 - `FRONTEND.md` - UI implementation and egui interaction guidance.
 - `PRODUCT_SENSE.md` - product judgment and user workflow priorities.
 - `client-model-mapping.md` - client-visible model mapping versus upstream Route Pool routes.
+- `provider-api-kinds.md` - Anthropic Messages, OpenAI Chat Completions and OpenAI Responses provider protocol boundaries.
 
 ## Quality And Operations
 

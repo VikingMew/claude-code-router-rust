@@ -2,7 +2,7 @@
 
 **状态：** 长期跟踪文档
 **范围：** 集中记录当前已知技术债、文档债和验证债
-**最后验证：** 2026-05-13
+**最后验证：** 2026-05-17
 
 ## 使用方式
 
@@ -25,6 +25,171 @@
 - 如果只是历史 phase 中出现旧术语，但不代表当前 runtime 行为，不需要为每个历史文件开债务；应在索引或长期文档中统一说明。
 
 ## Tracked Items
+
+### plan-012 - Stream event 跨协议转换
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-012-stream-event-cross-protocol-conversion.md`
+
+影响：
+
+- 当前 streaming 多数是 upstream passthrough，client 入站协议和 upstream API kind 不同时可能收到不认识的 SSE event schema。
+- Codex 走 Anthropic upstream、Claude Code 走 OpenAI upstream 时，text delta、finish reason、usage、error、tool event 都需要明确转换或明确不支持。
+- TTFT 和 stream chunk metrics 需要在转换后仍然可信。
+
+修正方向：
+
+- 定义 stream event support matrix。
+- 先覆盖 text delta、start/stop、finish reason、usage 和 error。
+- 对暂不支持组合返回明确错误或做明确 non-stream 降级。
+
+验证方式：
+
+- `cargo test --package ccr-server stream`
+- `cargo test --package ccr-sse --lib`
+- `cargo test --package ccr-app-core --lib metrics`
+
+完成记录：
+
+- 2026-05-17：跨协议 streaming 改为明确 build error，避免不兼容 SSE schema passthrough；完整 event schema 转换仍是后续增强。
+- 验证：`cargo test --package ccr-server`、`cargo test --package ccr-sse --lib`。
+
+### plan-011 - OpenAI Responses stateful 字段跨 provider 降级策略
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-011-responses-stateful-fields-degradation.md`
+
+影响：
+
+- `previous_response_id`、`conversation_id`、`prompt` 等 Responses-only state 字段没有非 Responses provider 的等价语义。
+- 静默丢弃或原样透传都会造成错误行为或难以诊断的上下文丢失。
+
+修正方向：
+
+- Responses upstream 保留合法 stateful 字段。
+- Chat/Messages upstream 对仅依赖 state handle 的请求返回明确错误。
+- 对同时包含完整 input/messages 的请求记录降级日志。
+
+验证方式：
+
+- `cargo test --package ccr-server --lib stateful`
+- `cargo test --package ccr-app-core --lib logging`
+
+完成记录：
+
+- 2026-05-17：Responses upstream 保留 stateful 字段；非 Responses provider 对 state-only 请求返回明确错误。
+- 验证：`cargo test --package ccr-server --lib`。
+
+### plan-010 - 多模态 content 跨协议映射
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-010-multimodal-content-cross-protocol-mapping.md`
+
+影响：
+
+- 当前转换主要覆盖 text content 和 Codex `input_text` / `output_text` 最小规范化。
+- 真实 image/file/audio content 可能被错误透传、静默丢失或发成 upstream 不支持的 body。
+
+修正方向：
+
+- 建立 content block support matrix。
+- 先支持 text 和 image 的可验证映射。
+- 对 file/audio/video 返回明确 unsupported error 或定义降级策略。
+
+验证方式：
+
+- `cargo test --package ccr-server --lib multimodal`
+- `cargo test --package ccr-transformer --lib multimodal`
+
+完成记录：
+
+- 2026-05-17：新增 text/image 最小跨协议映射；audio/file 等不支持 content type 返回明确错误。
+- 验证：`cargo test --package ccr-server --lib`、`cargo test --package ccr-transformer --lib`。
+
+### plan-009 - Tool call/tool result 跨协议映射
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-009-tool-call-tool-result-cross-protocol-mapping.md`
+
+影响：
+
+- 当前已有部分 transformer 和 Anthropic SSE tool interception，但不是三 API kind 的完整 tool 映射矩阵。
+- Codex Responses 请求或响应中出现 tool call/tool result 时，跨 provider 行为没有完成保证。
+
+修正方向：
+
+- 定义统一 tool call/tool result 中间表示。
+- 覆盖 request body、response body 和 streaming delta。
+- 对不支持 provider kind 给明确错误。
+
+验证方式：
+
+- `cargo test --package ccr-server --lib tool`
+- `cargo test --package ccr-transformer --lib tool`
+- `cargo test --package ccr-sse --lib`
+
+完成记录：
+
+- 2026-05-17：新增 Anthropic `tool_use` 到 OpenAI Chat `tool_calls` 的 non-stream request mapping；streaming tool delta 由 plan-012 的 stream gate 阻止错误透传。
+- 验证：`cargo test --package ccr-server --lib`、`cargo test --package ccr-transformer --lib`、`cargo test --package ccr-sse --lib`。
+
+### plan-008 - Responses reasoning 字段映射
+
+**优先级：** P1
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-008-responses-reasoning-field-mapping.md`
+
+影响：
+
+- Responses `reasoning` 字段与现有 `reasoning` / `forcereasoning` transformer 不是同一个完成口径。
+- 非 Responses provider 收到 Responses-only reasoning 字段可能产生非法请求。
+
+修正方向：
+
+- OpenAI Responses upstream 保留合法 reasoning 字段。
+- OpenAI Chat / Anthropic Messages upstream 明确丢弃、降级或映射，并记录日志。
+- 增加 reasoning 字段 fixture 测试。
+
+验证方式：
+
+- `cargo test --package ccr-server --lib reasoning`
+- `cargo test --package ccr-transformer --lib reasoning`
+
+完成记录：
+
+- 2026-05-17：Responses upstream 保留 `reasoning`；非 Responses provider 不透传 Responses-only reasoning 字段。
+- 验证：`cargo test --package ccr-server --lib`、`cargo test --package ccr-transformer --lib`。
+
+### plan-007 - Provider API kind 基础协议矩阵
+
+**优先级：** P0
+**状态：** resolved
+**执行计划：** `docs/exec-plans/completed/plan-007-provider-api-kind-protocol-matrix-completion.md`
+
+影响：
+
+- 当前已实现 Codex Responses 入站的最小转换，但 Claude/Anthropic Messages 入站到 OpenAI Responses upstream 的转换仍缺明确完成保证。
+- 三种 API kind 如果没有完整基础矩阵测试，容易再次把 `messages` 发到只接受 `input` 的 Responses upstream。
+
+修正方向：
+
+- 补齐 `AnthropicMessages` / `OpenAiResponses` 入站到三种 provider API kind 的基础 body/header 构建矩阵。
+- 对非法 body shape 返回 build error。
+- 增加 upstream builder 单元测试。
+
+验证方式：
+
+- `cargo test --package ccr-server --lib upstream_builder`
+- `cargo test --package ccr-server --lib`
+
+完成记录：
+
+- 2026-05-17：补齐 Anthropic Messages / OpenAI Responses 入站到 Anthropic、OpenAI Chat、OpenAI Responses upstream 的基础 body/header 构建矩阵。
+- 验证：`cargo test --package ccr-server --lib`、`cargo test --package ccr-server`。
 
 ### plan-005 - 长期文档现状、方向和代码/文档一致性审计
 

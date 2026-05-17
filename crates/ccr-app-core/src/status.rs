@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +159,18 @@ pub fn start_server(exe_path: &Path) -> Result<ServerOperation> {
         }
     }
 
-    let child = Command::new(exe_path)
+    let mut command = Command::new(exe_path);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let child = command
         .spawn()
         .with_context(|| format!("failed to start {}", exe_path.display()))?;
     let pid = child.id();

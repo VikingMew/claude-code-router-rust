@@ -8,7 +8,21 @@ use ccr_app_core::client_config::codex::{
 use ccr_app_core::status::{is_process_alive, pid_file_path, read_pid, write_pid};
 use ccr_config::{default_config_path, load_config};
 use clap::{Parser, Subcommand};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+fn server_command(exe: &std::path::Path) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
 
 #[derive(Parser)]
 #[command(name = "ccr", about = "Claude Code Router")]
@@ -64,7 +78,7 @@ fn main() -> Result<()> {
                 .parent()
                 .unwrap()
                 .join("ccr-server");
-            let child = Command::new(&exe).spawn()?;
+            let child = server_command(&exe).spawn()?;
             let pid = child.id();
             write_pid(&pid_path, pid)?;
             println!("Server started (PID {pid})");
@@ -98,7 +112,7 @@ fn main() -> Result<()> {
                 .parent()
                 .unwrap()
                 .join("ccr-server");
-            let child = Command::new(&exe).spawn()?;
+            let child = server_command(&exe).spawn()?;
             let pid = child.id();
             write_pid(&pid_path, pid)?;
             println!("Server restarted (PID {pid})");
