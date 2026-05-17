@@ -6,6 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 use toml_edit::{DocumentMut, Item, Table, value};
 
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+
 /// Get Codex config file path.
 pub fn codex_config_path() -> PathBuf {
     codex_config_dir().join("config.toml")
@@ -181,8 +183,8 @@ pub fn activate_codex_ccr() -> Result<()> {
     prepare_codex_auth_activation_files(&auth_path, &auth_backup_path, &auth_missing_marker)?;
 
     let ccr_config = load_config(&default_config_path()).context("Failed to load CCR config")?;
-    let (port, model) = codex_route_from_config(&ccr_config)?;
-    install_codex_config(&codex_path, port, &model, &original)?;
+    let port = codex_port_from_config(&ccr_config);
+    install_codex_config(&codex_path, port, &original)?;
     install_codex_auth(&auth_path)?;
 
     println!("✓ Backed up Codex config to {}", backup_path.display());
@@ -213,17 +215,8 @@ pub fn deactivate_codex_ccr() -> Result<()> {
     Ok(())
 }
 
-fn codex_route_from_config(config: &ccr_types::Config) -> Result<(u16, String)> {
-    let port = config.port.unwrap_or(3456);
-    let model = config
-        .first_route_pool_route()
-        .ok_or_else(|| anyhow::anyhow!("Route Pool is not configured or has no enabled routes"))?
-        .to_string();
-    Ok((port, model))
-}
-
-fn model_name(route: &str) -> &str {
-    route.splitn(2, ',').nth(1).unwrap_or(route)
+fn codex_port_from_config(config: &ccr_types::Config) -> u16 {
+    config.port.unwrap_or(3456)
 }
 
 fn prepare_codex_activation_files(
@@ -282,13 +275,8 @@ fn prepare_codex_auth_activation_files(
     Ok(())
 }
 
-fn install_codex_config(
-    codex_path: &std::path::Path,
-    port: u16,
-    model: &str,
-    original: &str,
-) -> Result<()> {
-    let updated = build_codex_config(original, port, model)?;
+fn install_codex_config(codex_path: &std::path::Path, port: u16, original: &str) -> Result<()> {
+    let updated = build_codex_config(original, port)?;
     let temp_path = codex_path.with_extension("toml.tmp");
     fs::write(&temp_path, updated).context("Failed to write temporary Codex config")?;
     set_secure_permissions(&temp_path)?;
@@ -353,7 +341,7 @@ fn restore_codex_auth(
     Ok(())
 }
 
-fn build_codex_config(original: &str, port: u16, model: &str) -> Result<String> {
+fn build_codex_config(original: &str, port: u16) -> Result<String> {
     let mut doc = if original.trim().is_empty() {
         DocumentMut::new()
     } else {
@@ -362,7 +350,9 @@ fn build_codex_config(original: &str, port: u16, model: &str) -> Result<String> 
             .context("Failed to parse Codex config TOML")?
     };
 
-    doc["model"] = value(model_name(model));
+    if doc.get("model").and_then(|item| item.as_str()).is_none() {
+        doc["model"] = value(DEFAULT_CODEX_MODEL);
+    }
     doc["model_provider"] = value("ccr");
     doc["model_reasoning_effort"] = value("high");
     doc["disable_response_storage"] = value(true);
@@ -394,7 +384,7 @@ fn build_codex_config(original: &str, port: u16, model: &str) -> Result<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccr_types::{Config, RoutePoolCandidate, RoutePoolConfig};
+    use ccr_types::Config;
     use tempfile::TempDir;
 
     #[test]
@@ -412,10 +402,10 @@ personality = "pragmatic"
 [projects."/tmp/project"]
 trust_level = "trusted"
 "#;
-        let out = build_codex_config(original, 3456, "openai,gpt-5-codex").unwrap();
+        let out = build_codex_config(original, 3456).unwrap();
         let doc = out.parse::<DocumentMut>().unwrap();
         assert_eq!(doc["personality"].as_str(), Some("pragmatic"));
-        assert_eq!(doc["model"].as_str(), Some("gpt-5-codex"));
+        assert_eq!(doc["model"].as_str(), Some(DEFAULT_CODEX_MODEL));
         assert_eq!(doc["model_provider"].as_str(), Some("ccr"));
         assert_eq!(doc["model_reasoning_effort"].as_str(), Some("high"));
         assert_eq!(doc["disable_response_storage"].as_bool(), Some(true));
@@ -435,9 +425,9 @@ trust_level = "trusted"
 
     #[test]
     fn build_codex_config_from_empty_creates_minimal_provider() {
-        let out = build_codex_config("", 4567, "openai,gpt-5-codex").unwrap();
+        let out = build_codex_config("", 4567).unwrap();
         let doc = out.parse::<DocumentMut>().unwrap();
-        assert_eq!(doc["model"].as_str(), Some("gpt-5-codex"));
+        assert_eq!(doc["model"].as_str(), Some(DEFAULT_CODEX_MODEL));
         assert_eq!(doc["model_provider"].as_str(), Some("ccr"));
         assert_eq!(
             doc["model_providers"]["ccr"]["base_url"].as_str(),
@@ -451,7 +441,7 @@ trust_level = "trusted"
 
     #[test]
     fn build_codex_config_points_to_local_v1_responses_provider() {
-        let out = build_codex_config("", 3456, "openai,gpt-5-codex").unwrap();
+        let out = build_codex_config("", 3456).unwrap();
         let doc = out.parse::<DocumentMut>().unwrap();
 
         assert_eq!(doc["model_provider"].as_str(), Some("ccr"));
@@ -469,7 +459,7 @@ trust_level = "trusted"
     fn codex_points_to_ccr_matches_expected_local_v1_endpoint() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("config.toml");
-        let out = build_codex_config("", 3456, "openai,gpt-5-codex").unwrap();
+        let out = build_codex_config("", 3456).unwrap();
         fs::write(&path, out).unwrap();
 
         assert!(codex_config_points_to_ccr(&path, 3456));
@@ -516,9 +506,9 @@ base_url = "http://127.0.0.1:1111/v1"
 wire_api = "chat"
 requires_openai_auth = true
 "#;
-        let out = build_codex_config(original, 6789, "openai,gpt-5-codex").unwrap();
+        let out = build_codex_config(original, 6789).unwrap();
         let doc = out.parse::<DocumentMut>().unwrap();
-        assert_eq!(doc["model"].as_str(), Some("gpt-5-codex"));
+        assert_eq!(doc["model"].as_str(), Some("old-model"));
         assert_eq!(doc["model_provider"].as_str(), Some("ccr"));
         assert_eq!(doc["model_providers"]["ccr"]["name"].as_str(), Some("CCR"));
         assert_eq!(
@@ -537,41 +527,27 @@ requires_openai_auth = true
 
     #[test]
     fn build_codex_config_rejects_invalid_toml() {
-        let err = build_codex_config("not = [valid", 3456, "openai,gpt-5-codex")
+        let err = build_codex_config("not = [valid", 3456)
             .unwrap_err()
             .to_string();
         assert!(err.contains("Failed to parse Codex config TOML"));
     }
 
     #[test]
-    fn codex_route_from_config_uses_config_values() {
+    fn codex_port_from_config_uses_config_port() {
         let config = Config {
             port: Some(4567),
-            route_pool: Some(RoutePoolConfig {
-                enabled: true,
-                failure_threshold: 3,
-                ban_seconds: 3600,
-                candidates: vec![RoutePoolCandidate {
-                    route: "openai,gpt-5.1-codex".to_string(),
-                    enabled: true,
-                    priority: 1,
-                }],
-            }),
             ..Default::default()
         };
 
-        assert_eq!(
-            codex_route_from_config(&config).unwrap(),
-            (4567, "openai,gpt-5.1-codex".to_string())
-        );
+        assert_eq!(codex_port_from_config(&config), 4567);
     }
 
     #[test]
-    fn codex_route_from_config_errors_without_route_pool() {
+    fn codex_port_from_config_does_not_require_route_pool() {
         let config = Config::default();
 
-        let err = codex_route_from_config(&config).unwrap_err().to_string();
-        assert!(err.contains("Route Pool is not configured"));
+        assert_eq!(codex_port_from_config(&config), 3456);
     }
 
     #[test]
@@ -579,7 +555,7 @@ requires_openai_auth = true
         let temp = TempDir::new().unwrap();
         let codex_path = temp.path().join("config.toml");
 
-        install_codex_config(&codex_path, 7890, "openai,gpt-5-codex", "").unwrap();
+        install_codex_config(&codex_path, 7890, "").unwrap();
 
         let installed = fs::read_to_string(codex_path).unwrap();
         let doc = installed.parse::<DocumentMut>().unwrap();
@@ -595,7 +571,7 @@ requires_openai_auth = true
         let temp = TempDir::new().unwrap();
         let codex_path = temp.path().join("config.toml");
 
-        let err = install_codex_config(&codex_path, 3456, "openai,gpt-5-codex", "bad = [")
+        let err = install_codex_config(&codex_path, 3456, "bad = [")
             .unwrap_err()
             .to_string();
 
