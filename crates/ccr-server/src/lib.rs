@@ -121,6 +121,7 @@ fn prepare_responses_body_for_mode(
 ) -> Result<Value, String> {
     body["model"] = Value::String(upstream_model.to_string());
     if mode == EndpointTestMode::OpenAiResponses {
+        ensure_responses_input(&mut body)?;
         return Ok(body);
     }
 
@@ -141,6 +142,23 @@ fn prepare_responses_body_for_mode(
         converted.insert("max_tokens".to_string(), max_tokens.clone());
     }
     Ok(Value::Object(converted))
+}
+
+fn ensure_responses_input(body: &mut Value) -> Result<(), String> {
+    if body.get("input").is_some() {
+        return Ok(());
+    }
+    let Some(messages) = body.get("messages").cloned() else {
+        return Ok(());
+    };
+    if !messages.is_array() {
+        return Err("Unsupported Responses messages shape".to_string());
+    }
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("messages");
+        obj.insert("input".to_string(), messages);
+    }
+    Ok(())
 }
 
 pub fn route_model_override(route: &str) -> Option<&str> {
@@ -178,16 +196,39 @@ pub fn upstream_model_name(
 
 fn responses_input_to_messages(body: &Value) -> Result<Value, String> {
     if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
-        return Ok(Value::Array(messages.clone()));
+        return Ok(Value::Array(
+            messages.iter().map(normalize_message_content).collect(),
+        ));
     }
     match body.get("input") {
         Some(Value::String(input)) => Ok(serde_json::json!([
             {"role": "user", "content": input}
         ])),
-        Some(Value::Array(items)) => Ok(Value::Array(items.clone())),
+        Some(Value::Array(items)) => Ok(Value::Array(
+            items.iter().map(normalize_message_content).collect(),
+        )),
         Some(_) => Err("Unsupported Responses input shape".to_string()),
         None => Err("Responses request is missing input/messages".to_string()),
     }
+}
+
+fn normalize_message_content(message: &Value) -> Value {
+    let mut message = message.clone();
+    let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return message;
+    };
+    for item in content {
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        if matches!(
+            obj.get("type").and_then(Value::as_str),
+            Some("input_text" | "output_text")
+        ) {
+            obj.insert("type".to_string(), Value::String("text".to_string()));
+        }
+    }
+    message
 }
 
 fn transformer_names(provider: &Provider) -> Vec<String> {
@@ -443,6 +484,32 @@ mod tests {
     }
 
     #[test]
+    fn upstream_builder_maps_codex_messages_to_responses_input() {
+        let provider = provider_with_kind(ProviderApiKind::OpenAiResponses, vec![]);
+        let registry = TransformerRegistry::new();
+        let request = build_upstream_request(
+            InboundProtocol::OpenAiResponses,
+            "p,gpt-5.5",
+            &provider,
+            serde_json::json!({
+                "model": "p,gpt-5.5",
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}]
+                }],
+                "stream": true
+            }),
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(request.body["model"], "gpt-5.5");
+        assert_eq!(request.body["input"][0]["role"], "user");
+        assert_eq!(request.body["input"][0]["content"][0]["type"], "input_text");
+        assert!(request.body.get("messages").is_none());
+    }
+
+    #[test]
     fn upstream_builder_preserves_inbound_model_for_provider_only_route() {
         let provider = provider_with_kind(ProviderApiKind::AnthropicMessages, vec![]);
         let registry = TransformerRegistry::new();
@@ -538,6 +605,30 @@ mod tests {
         assert_eq!(request.body["messages"][0]["content"], "hello");
         assert_eq!(request.body["max_tokens"], 2);
         assert!(request.headers.iter().any(|(name, _)| name == "x-api-key"));
+    }
+
+    #[test]
+    fn upstream_builder_normalizes_codex_content_for_messages_provider() {
+        let provider = provider_with_kind(ProviderApiKind::AnthropicMessages, vec![]);
+        let registry = TransformerRegistry::new();
+        let request = build_upstream_request(
+            InboundProtocol::OpenAiResponses,
+            "p,claude-sonnet-4",
+            &provider,
+            serde_json::json!({
+                "model": "p,claude-sonnet-4",
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}]
+                }]
+            }),
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(request.body["model"], "claude-sonnet-4");
+        assert_eq!(request.body["messages"][0]["role"], "user");
+        assert_eq!(request.body["messages"][0]["content"][0]["type"], "text");
     }
 
     #[test]
