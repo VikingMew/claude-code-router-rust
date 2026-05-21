@@ -29,7 +29,12 @@ impl TokenCounterTab {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Token Counter");
+        ui.horizontal(|ui| {
+            ui.heading("Token Counter");
+            if ui.button("Calculate Tokens").clicked() {
+                self.calculate();
+            }
+        });
 
         ui.horizontal(|ui| {
             ui.label("Model:");
@@ -61,12 +66,6 @@ impl TokenCounterTab {
                 .desired_width(f32::INFINITY)
                 .code_editor(),
         );
-
-        ui.add_space(8.0);
-
-        if ui.button("Calculate Tokens").clicked() {
-            self.calculate();
-        }
 
         ui.add_space(8.0);
 

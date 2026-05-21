@@ -74,10 +74,7 @@ impl LogsTab {
         self.refresh_if_due(Instant::now());
 
         ui.horizontal(|ui| {
-            ui.label("Target");
-            ui.text_edit_singleline(&mut self.target_filter);
-            ui.label("Event");
-            ui.text_edit_singleline(&mut self.event_filter);
+            ui.heading("Logs");
             if ui.button("Clear").clicked() {
                 let path = app_log_path();
                 if let Some(parent) = path.parent() {
@@ -88,9 +85,19 @@ impl LogsTab {
                 self.refresh_now();
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("Target");
+            ui.text_edit_singleline(&mut self.target_filter);
+            ui.label("Event");
+            ui.text_edit_singleline(&mut self.event_filter);
+        });
         ui.separator();
         let filtered = self.filtered_content();
-        let mut display = filtered.as_str();
+        let mut display = if filtered.is_empty() {
+            "No log entries match the current filters."
+        } else {
+            filtered.as_str()
+        };
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut display)

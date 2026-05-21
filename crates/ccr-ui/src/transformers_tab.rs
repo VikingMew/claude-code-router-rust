@@ -14,7 +14,15 @@ impl TransformersTab {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        ui.label("Available transformers:");
+        ui.horizontal(|ui| {
+            ui.heading("Transformers");
+        });
+        ui.separator();
+        ui.label("Available transformers");
+        if self.names.is_empty() {
+            ui.label("No transformers registered.");
+            return;
+        }
         ui.separator();
         for name in &self.names {
             ui.label(name);
