@@ -16,7 +16,7 @@ pub struct ToolDefinition {
 pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
 
-    /// Returns a model override if this agent should handle the request.
+    /// Returns a marker when this agent should handle the request.
     fn detect(&self, req: &MessagesRequest, config: &Config) -> Option<String>;
 
     /// Check if this agent has a specific tool
@@ -44,7 +44,7 @@ pub trait Agent: Send + Sync {
     }
 }
 
-/// Detects image content blocks and routes to Router.image model.
+/// Detects image content blocks and injects image-analysis tooling.
 pub struct ImageAgent;
 
 #[async_trait]
@@ -53,15 +53,7 @@ impl Agent for ImageAgent {
         "image"
     }
 
-    fn detect(&self, req: &MessagesRequest, config: &Config) -> Option<String> {
-        // If already routed to image model, don't handle
-        if let Some(image_model) = &config.router.image {
-            if req.model.contains(image_model) {
-                return None;
-            }
-        }
-
-        let image_model = config.router.image.as_ref()?;
+    fn detect(&self, req: &MessagesRequest, _config: &Config) -> Option<String> {
         let has_image = req.messages.iter().any(|msg| {
             if let Some(arr) = msg.content.as_array() {
                 arr.iter()
@@ -71,7 +63,7 @@ impl Agent for ImageAgent {
             }
         });
         if has_image {
-            Some(image_model.clone())
+            Some(self.name().to_string())
         } else {
             None
         }
@@ -173,12 +165,11 @@ impl Agent for ImageAgent {
         let task = args.get("task")?.as_str()?;
 
         // Build analysis request
-        let image_model = config.router.image.as_ref()?;
         let port = config.port.unwrap_or(3456);
         let api_key = config.api_key.as_deref().unwrap_or("");
 
         let analysis_req = serde_json::json!({
-            "model": image_model,
+            "model": _req.model.clone(),
             "system": [{
                 "type": "text",
                 "text": "You must interpret and analyze images strictly according to the assigned task. When an image placeholder is provided, your role is to parse the image content only within the scope of the user's instructions. Do not ignore or deviate from the task. Always ensure that your response reflects a clear, accurate interpretation of the image aligned with the given objective."
@@ -210,7 +201,7 @@ impl Agent for ImageAgent {
     }
 }
 
-/// Run all agents; return the first model override found.
+/// Run all agents; return the first matching agent marker.
 pub fn run_agents(
     agents: &[Box<dyn Agent>],
     req: &MessagesRequest,
@@ -222,7 +213,7 @@ pub fn run_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccr_types::{Config, Message, MessagesRequest, RouterConfig};
+    use ccr_types::{Config, Message, MessagesRequest};
     use serde_json::json;
 
     fn base_req(content: serde_json::Value) -> MessagesRequest {
@@ -240,49 +231,28 @@ mod tests {
         }
     }
 
-    fn config_with_image(model: &str) -> Config {
-        Config {
-            router: RouterConfig {
-                image: Some(model.into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn detects_image_block() {
         let agent = ImageAgent;
         let req =
             base_req(json!([{"type": "image", "source": {}}, {"type": "text", "text": "what?"}]));
-        let config = config_with_image("openai,gpt-4o");
-        assert_eq!(agent.detect(&req, &config), Some("openai,gpt-4o".into()));
+        assert_eq!(agent.detect(&req, &Config::default()), Some("image".into()));
     }
 
     #[test]
     fn no_image_returns_none() {
         let agent = ImageAgent;
         let req = base_req(json!("just text"));
-        let config = config_with_image("openai,gpt-4o");
-        assert!(agent.detect(&req, &config).is_none());
-    }
-
-    #[test]
-    fn no_image_route_configured_returns_none() {
-        let agent = ImageAgent;
-        let req = base_req(json!([{"type": "image", "source": {}}]));
-        let config = Config::default();
-        assert!(agent.detect(&req, &config).is_none());
+        assert!(agent.detect(&req, &Config::default()).is_none());
     }
 
     #[test]
     fn run_agents_returns_first_match() {
         let agents: Vec<Box<dyn Agent>> = vec![Box::new(ImageAgent)];
         let req = base_req(json!([{"type": "image", "source": {}}]));
-        let config = config_with_image("openai,gpt-4o");
         assert_eq!(
-            run_agents(&agents, &req, &config),
-            Some("openai,gpt-4o".into())
+            run_agents(&agents, &req, &Config::default()),
+            Some("image".into())
         );
     }
 }
