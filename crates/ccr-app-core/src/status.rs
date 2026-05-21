@@ -11,8 +11,8 @@ use crate::client_config::opencode::{
 };
 use crate::metrics::{RouteMetricSummary, TtftMetricSummary};
 use crate::runtime_status::{
-    RoutePoolStatusResponse, fetch_route_pool_status, fetch_runtime_metrics_summary,
-    fetch_ttft_metrics_summary,
+    RoutePoolEvent, RoutePoolStatusResponse, fetch_route_pool_events, fetch_route_pool_status,
+    fetch_runtime_metrics_summary, fetch_ttft_metrics_summary,
 };
 use crate::settings::route_pool_config;
 use anyhow::{Context, Result};
@@ -139,6 +139,7 @@ pub struct StatusSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeStatusSnapshot {
     pub route_pool_status: Result<RoutePoolStatusResponse, String>,
+    pub route_pool_events: Result<Vec<RoutePoolEvent>, String>,
     pub runtime_metrics_summary: Result<Vec<RouteMetricSummary>, String>,
     pub ttft_metrics_summary: Result<Vec<TtftMetricSummary>, String>,
 }
@@ -260,6 +261,7 @@ pub fn route_pool_config_snapshot(config: &Config) -> RoutePoolConfigSnapshot {
 pub fn fetch_runtime_status_snapshot(port: u16, api_key: Option<&str>) -> RuntimeStatusSnapshot {
     RuntimeStatusSnapshot {
         route_pool_status: fetch_route_pool_status(port, api_key),
+        route_pool_events: fetch_route_pool_events(port, api_key),
         runtime_metrics_summary: fetch_runtime_metrics_summary(port, api_key),
         ttft_metrics_summary: fetch_ttft_metrics_summary(port, api_key),
     }

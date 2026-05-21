@@ -2,7 +2,7 @@
 
 **状态：** 长期记录文档
 **范围：** 记录 `ccr-rust` 的长期产品方向、工程约束和后续 phase 拆分边界
-**最后验证：** 2026-05-17
+**最后验证：** 2026-05-21
 
 ## 使用方式
 
@@ -102,6 +102,8 @@ Admin API 不是近期主产品面。`/api/admin/*` 必须默认关闭；如果�
 - Runtime metrics：真实请求观测，用于 provider 质量和 Route Pool 健康。
 - Response metrics：真实请求返回路径上的 first byte、TTFT、总耗时、stream chunk 和 token throughput 等指标；它们不能从 endpoint test 推断。当前已实现真实 API TTFT window，stream timing 和 token throughput 仍待补齐。
 
+Route Pool ban/failure health state is current server session runtime state. Consecutive failures, active bans and last success/failure fields are not persisted and are cleared by server restart. Recent Route Pool event history is exposed for UI recovery/diagnostics during the running server session, while app logs and runtime metrics remain the durable diagnostic record.
+
 ### 5. UI 逻辑继续下沉到 app-core
 
 `ccr-ui` 应主要负责渲染和派发 action。复杂状态转换、配置写入、endpoint test 结果处理、status snapshot 和 client 注入逻辑应继续迁移到 `ccr-app-core` 或对应非 UI crate。
@@ -167,7 +169,7 @@ docs/exec-plans/
 - 维护 `docs/index.md` 和 `docs/exec-plans/index.md`。
 - 将新的复杂工作放入 `docs/exec-plans/active/`。
 - 将 UI 中仍然直接处理的业务逻辑继续迁移到 `ccr-app-core`。
-- 为 Route Pool runtime state 增加清除 ban、event history 和最小 health summary。
+- 维护 Route Pool runtime clear/reset 操作、session event history 和最小 health summary。
 - 为真实 request/attempt history 增加更完整的查询和 UI，继续补 first byte、stream timing 和 token throughput。
 
 ### 后期
