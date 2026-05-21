@@ -183,10 +183,7 @@ impl LogsTab {
         self.refresh_if_due(Instant::now());
 
         ui.horizontal(|ui| {
-            ui.label("Target");
-            ui.text_edit_singleline(&mut self.target_filter);
-            ui.label("Event");
-            ui.text_edit_singleline(&mut self.event_filter);
+            ui.heading("Logs");
             if ui.button("Clear").clicked() {
                 let path = app_log_path();
                 if let Some(parent) = path.parent() {
@@ -197,14 +194,24 @@ impl LogsTab {
                 self.refresh_now();
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("Target");
+            ui.text_edit_singleline(&mut self.target_filter);
+            ui.label("Event");
+            ui.text_edit_singleline(&mut self.event_filter);
+        });
         if !self.status.is_empty() {
             ui.label(&self.status);
         }
         ui.separator();
         let filtered = self.filtered_lines();
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for line in &filtered {
-                ui.monospace(line);
+            if filtered.is_empty() {
+                ui.label("No log entries match the current filters.");
+            } else {
+                for line in &filtered {
+                    ui.monospace(line);
+                }
             }
             if self.has_more_older && ui.button("Load older").clicked() {
                 self.load_older();
