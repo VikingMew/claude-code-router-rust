@@ -201,7 +201,7 @@ Rust 已经有 Codex `/v1/responses` 入口、provider API kind 和最小 Respon
 
 - Phase 45 默认配置 profiles，复用 preset 模型
 - Codex Responses 到 Anthropic Messages 的协议测试
-- Provider API kind 接入 client injection
+- Provider API kind 接入 server upstream、endpoint test、transformer 推荐和 direct-to-provider 可选模式预览；默认 client injection 仍只指向本地 CCR server
 - Preset install 的 UI/core 最小闭环
 
 ### P1
