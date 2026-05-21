@@ -272,6 +272,22 @@ async fn get_runtime_metric_ttft_summary(
     HttpResponse::Ok().json(summary)
 }
 
+async fn get_runtime_metric_diagnostics(
+    req: HttpRequest,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let diagnostics = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.diagnostics())
+        .unwrap_or_default();
+    HttpResponse::Ok().json(diagnostics)
+}
+
 async fn get_preset(
     req: HttpRequest,
     path: web::Path<String>,
@@ -1857,6 +1873,10 @@ async fn main() -> std::io::Result<()> {
                 "/api/runtime-metrics/ttft-summary",
                 web::get().to(get_runtime_metric_ttft_summary),
             )
+            .route(
+                "/api/runtime-metrics/diagnostics",
+                web::get().to(get_runtime_metric_diagnostics),
+            )
             .route("/api/presets", web::get().to(get_presets))
             .route("/api/presets/{name}", web::get().to(get_preset))
             .route(
@@ -1941,6 +1961,44 @@ mod tests {
         let body = to_bytes(resp.into_body()).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["input_tokens"].as_u64(), Some(expected as u64));
+    }
+
+    #[actix_web::test]
+    async fn runtime_metrics_diagnostics_handler_serializes_diagnostics() {
+        let mut config = Config {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        config.route_pool = Some(ccr_types::RoutePoolConfig {
+            enabled: true,
+            candidates: vec![],
+            failure_threshold: 1,
+            ban_seconds: 1,
+        });
+        let state = web::Data::new(test_state(config));
+        let req = actix_web::test::TestRequest::get()
+            .insert_header(("authorization", "Bearer test-key"))
+            .to_http_request();
+
+        let resp = get_runtime_metric_diagnostics(req, state).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["attempts"]["malformed_lines"], 0);
+        assert_eq!(value["requests"]["malformed_lines"], 0);
+        assert!(
+            value["attempts"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("runtime-metrics.jsonl")
+        );
+        assert!(
+            value["requests"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("runtime-request-metrics.jsonl")
+        );
     }
 
     #[test]
