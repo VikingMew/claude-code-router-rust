@@ -1,6 +1,7 @@
 # Client Model Mapping
 
-**状态：** 长期设计文档  
+**状态：** 长期设计文档
+**最后验证：** 2026-05-21
 **范围：** 记录 client-visible model mapping 与 CCR upstream routing model 的产品边界
 
 ## 产品边界
@@ -11,6 +12,7 @@
 
 - Claude Code 连接 `http://127.0.0.1:<port>`
 - Codex 连接 `http://127.0.0.1:<port>/v1`
+- OpenCode、OpenClaw 和 Hermes Agent 通过 additive provider/custom-provider entry 连接 `http://127.0.0.1:<port>/v1`
 - 上游 provider、真实模型、协议转换、transformer、Route Pool 由 CCR server 决定
 
 client 配置里的模型字段不等于上游 provider 的模型字段。
@@ -149,6 +151,9 @@ Router UI 需要解释这些规则之间的关系：
 ## Client 注入设计要求
 
 - Claude Code 和 Codex 默认写入本地 CCR endpoint。
+- OpenCode、OpenClaw 和 Hermes Agent 默认只增加或更新 CCR-owned provider entry，不覆盖用户的其他 providers、tools、profiles、MCP 或 secrets。
+- OpenCode、OpenClaw 和 Hermes Agent 的 client-visible model 从 Route Pool 第一条启用 route 的 `provider,model` 中只取 `model` 部分，不把 `openai,`、`anthropic,` 等 CCR upstream provider 前缀写进 client 配置。
+- Hermes Agent 使用 `custom_providers` 中名为 `ccr` 的 custom endpoint，`base_url` 指向本地 CCR `/v1`，`api_mode` 使用 OpenAI-compatible chat completions 的 `chat_completions`，不写入 `~/.hermes/.env`。
 - activate 前需要 config preview 和 diff。
 - 已激活配置需要重新应用动作。
 - direct-to-provider 模式如果存在，需要单独定义 provider kind 到 client config 的写入规则。

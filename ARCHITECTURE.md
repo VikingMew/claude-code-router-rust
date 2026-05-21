@@ -1,11 +1,11 @@
 # Architecture
 
 **状态：** 长期架构地图
-**最后验证：** 2026-05-07
+**最后验证：** 2026-05-21
 
 ## Product Shape
 
-`ccr-rust` is a Rust workspace for a UI-first local desktop router. Clients such as Claude Code, Codex, OpenCode and OpenClaw connect to a local CCR server. The server selects an upstream route from Route Pool, rewrites request shape when needed, sends the request to the configured provider and returns the response.
+`ccr-rust` is a Rust workspace for a UI-first local desktop router. Clients such as Claude Code, Codex, OpenCode, OpenClaw and Hermes Agent connect to a local CCR server. The server selects an upstream route from Route Pool, rewrites request shape when needed, sends the request to the configured provider and returns the response.
 
 Default mode is through-CCR:
 
@@ -111,6 +111,7 @@ Responsibilities:
 - Codex config activate/deactivate/status.
 - OpenCode additive provider write/remove/status.
 - OpenClaw additive provider write/remove/status.
+- Hermes additive custom provider write/remove/status.
 - Preset commands and model helper commands.
 
 CLI should not become the primary product surface for P0/P1 workflows.
@@ -137,6 +138,7 @@ Responsibilities:
 - Status snapshots.
 - Endpoint test request/result logic.
 - Settings state helpers.
+- Client config injection helpers.
 - Logging helpers.
 - Provider kind resolution support.
 
@@ -227,7 +229,7 @@ Boundary:
 - Codex `/v1/responses` support is handled by server.
 - upstream provider selection remains Route Pool behavior.
 
-### OpenCode and OpenClaw
+### OpenCode, OpenClaw and Hermes
 
 Additive provider configuration.
 
@@ -235,6 +237,7 @@ Boundary:
 
 - add/update/remove only CCR-managed provider fragments.
 - do not overwrite unrelated user provider, plugin or MCP config.
+- Hermes writes a `custom_providers` entry named `ccr` and points `model.provider` at `custom:ccr`; it does not edit `.env` secrets.
 
 ## Core Invariants
 

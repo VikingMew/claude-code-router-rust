@@ -4,6 +4,10 @@ use ccr_app_core::client_config::claude::{
 use ccr_app_core::client_config::codex::{
     activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr,
 };
+use ccr_app_core::client_config::hermes::{
+    activate_hermes_ccr, deactivate_hermes_ccr, hermes_config_path, hermes_provider_exists,
+    hermes_provider_present,
+};
 use ccr_app_core::client_config::openclaw::{
     activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_config_path, openclaw_provider_exists,
     openclaw_provider_present,
@@ -33,6 +37,7 @@ struct StatusSnapshot {
     codex: InjectionSnapshot,
     opencode: AdditiveClientSnapshot,
     openclaw: AdditiveClientSnapshot,
+    hermes: AdditiveClientSnapshot,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +96,8 @@ pub struct StatusTab {
     opencode_checking: bool,
     openclaw_status: String,
     openclaw_checking: bool,
+    hermes_status: String,
+    hermes_checking: bool,
     server_operation_status: String,
     server_operation_checking: bool,
     route_pool_status: Option<Result<RoutePoolStatusResponse, String>>,
@@ -113,6 +120,8 @@ impl StatusTab {
             opencode_checking: false,
             openclaw_status: String::new(),
             openclaw_checking: false,
+            hermes_status: String::new(),
+            hermes_checking: false,
             server_operation_status: String::new(),
             server_operation_checking: false,
             route_pool_status: None,
@@ -182,6 +191,10 @@ impl StatusTab {
         ui.separator();
         ui.add_space(8.0);
         self.show_openclaw(ui);
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+        self.show_hermes(ui);
     }
 
     fn show_server(&mut self, ui: &mut egui::Ui) {
@@ -535,6 +548,43 @@ impl StatusTab {
         }
         show_status_message(ui, &self.openclaw_status);
     }
+
+    fn show_hermes(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Hermes Config");
+        show_additive_client_snapshot(ui, &self.snapshot.hermes);
+
+        let server_running = self.snapshot.server.is_running();
+        let provider_present = self.snapshot.hermes.provider_present();
+        let current = self.snapshot.hermes.is_current();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    server_running && !current && !self.hermes_checking,
+                    egui::Button::new("Add CCR provider to Hermes"),
+                )
+                .clicked()
+            {
+                self.activate_hermes_config();
+            }
+            if ui
+                .add_enabled(
+                    provider_present && !self.hermes_checking,
+                    egui::Button::new("Remove CCR provider from Hermes"),
+                )
+                .clicked()
+            {
+                self.deactivate_hermes_config();
+            }
+        });
+
+        if !server_running && !provider_present {
+            ui.label("Start the server before adding CCR provider to Hermes.");
+        }
+        if self.hermes_checking {
+            ui.spinner();
+        }
+        show_status_message(ui, &self.hermes_status);
+    }
 }
 
 impl Default for StatusTab {
@@ -552,6 +602,7 @@ fn read_status_snapshot() -> StatusSnapshot {
         codex: codex_injection_snapshot(port),
         opencode: opencode_snapshot(port),
         openclaw: openclaw_snapshot(port),
+        hermes: hermes_snapshot(port),
     }
 }
 
@@ -571,6 +622,17 @@ fn openclaw_snapshot(port: u16) -> AdditiveClientSnapshot {
     if openclaw_provider_present(port) {
         AdditiveClientSnapshot::ProviderCurrent { path }
     } else if openclaw_provider_exists() {
+        AdditiveClientSnapshot::ProviderDrifted { path }
+    } else {
+        AdditiveClientSnapshot::Missing { path }
+    }
+}
+
+fn hermes_snapshot(port: u16) -> AdditiveClientSnapshot {
+    let path = hermes_config_path().display().to_string();
+    if hermes_provider_present(port) {
+        AdditiveClientSnapshot::ProviderCurrent { path }
+    } else if hermes_provider_exists() {
         AdditiveClientSnapshot::ProviderDrifted { path }
     } else {
         AdditiveClientSnapshot::Missing { path }
@@ -982,6 +1044,40 @@ impl StatusTab {
         }
 
         self.openclaw_checking = false;
+        self.refresh_snapshot();
+    }
+
+    fn activate_hermes_config(&mut self) {
+        self.hermes_checking = true;
+        self.hermes_status.clear();
+
+        match activate_hermes_ccr() {
+            Ok(_) => {
+                self.hermes_status = "✓ Added CCR provider to Hermes config".to_string();
+            }
+            Err(e) => {
+                self.hermes_status = format!("✗ Hermes update failed: {}", e);
+            }
+        }
+
+        self.hermes_checking = false;
+        self.refresh_snapshot();
+    }
+
+    fn deactivate_hermes_config(&mut self) {
+        self.hermes_checking = true;
+        self.hermes_status.clear();
+
+        match deactivate_hermes_ccr() {
+            Ok(_) => {
+                self.hermes_status = "✓ Removed CCR provider from Hermes config".to_string();
+            }
+            Err(e) => {
+                self.hermes_status = format!("✗ Hermes update failed: {}", e);
+            }
+        }
+
+        self.hermes_checking = false;
         self.refresh_snapshot();
     }
 

@@ -196,6 +196,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub openclaw_config_path: Option<String>,
     #[serde(default)]
+    pub hermes_config_path: Option<String>,
+    #[serde(default)]
     pub global_proxy: Option<String>,
     #[serde(default)]
     pub theme: String,
@@ -217,6 +219,7 @@ impl Default for AppSettings {
             codex_config_path: None,
             opencode_config_path: None,
             openclaw_config_path: None,
+            hermes_config_path: None,
             global_proxy: None,
             theme: String::new(),
             claude_code_models: ClaudeCodeModelSettings::default(),
@@ -342,6 +345,7 @@ mod tests {
         assert!(c.app_settings.server_auto_start);
         assert_eq!(c.app_settings.claude_code_models.model, "");
         assert_eq!(c.app_settings.claude_code_models.haiku_model, "");
+        assert_eq!(c.app_settings.hermes_config_path, None);
     }
 
     #[test]
