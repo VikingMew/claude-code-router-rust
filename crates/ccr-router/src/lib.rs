@@ -35,6 +35,10 @@ fn count_tokens_hf(text: &str) -> usize {
     }
 }
 
+/// Synchronous token counting for local backends and non-async callers.
+///
+/// If the API tokenizer is requested while already inside a Tokio runtime, this
+/// uses the tiktoken fallback instead of creating a nested runtime.
 pub fn count_tokens(req: &MessagesRequest, backend: &TokenizerBackend) -> usize {
     let count = |text: &str| match backend {
         TokenizerBackend::Tiktoken => count_tokens_tiktoken(text),
@@ -45,22 +49,41 @@ pub fn count_tokens(req: &MessagesRequest, backend: &TokenizerBackend) -> usize 
                 return cached;
             }
 
-            // Call API using tokio runtime
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(count_tokens_api(text, endpoint)) {
-                Ok(count) => {
-                    TOKEN_CACHE.set(text, count);
-                    count
-                }
-                Err(e) => {
-                    warn!("API tokenizer failed: {}, falling back to tiktoken", e);
-                    let count = count_tokens_tiktoken(text);
-                    TOKEN_CACHE.set(text, count);
-                    count
-                }
+            if tokio::runtime::Handle::try_current().is_ok() {
+                warn!(
+                    "API tokenizer requested from sync token counter inside an async runtime; falling back to tiktoken"
+                );
+                let count = count_tokens_tiktoken(text);
+                TOKEN_CACHE.set(text, count);
+                return count;
             }
+
+            let rt = tokio::runtime::Runtime::new()
+                .expect("failed to create Tokio runtime for sync API tokenizer call");
+            rt.block_on(count_tokens_api_with_fallback(text, endpoint))
         }
     };
+    count_tokens_with(req, count)
+}
+
+pub async fn count_tokens_async(req: &MessagesRequest, backend: &TokenizerBackend) -> usize {
+    match backend {
+        TokenizerBackend::Tiktoken => count_tokens_with(req, count_tokens_tiktoken),
+        TokenizerBackend::Huggingface => count_tokens_with(req, count_tokens_hf),
+        TokenizerBackend::Api { endpoint } => {
+            let mut total = 0;
+            for msg in &req.messages {
+                total += count_tokens_api_with_fallback(&msg.content.to_string(), endpoint).await;
+            }
+            if let Some(sys) = &req.system {
+                total += count_tokens_api_with_fallback(&sys.to_string(), endpoint).await;
+            }
+            total
+        }
+    }
+}
+
+fn count_tokens_with(req: &MessagesRequest, count: impl Fn(&str) -> usize) -> usize {
     let mut total = 0;
     for msg in &req.messages {
         total += count(&msg.content.to_string());
@@ -69,6 +92,25 @@ pub fn count_tokens(req: &MessagesRequest, backend: &TokenizerBackend) -> usize 
         total += count(&sys.to_string());
     }
     total
+}
+
+async fn count_tokens_api_with_fallback(text: &str, endpoint: &str) -> usize {
+    if let Some(cached) = TOKEN_CACHE.get(text) {
+        return cached;
+    }
+
+    match count_tokens_api(text, endpoint).await {
+        Ok(count) => {
+            TOKEN_CACHE.set(text, count);
+            count
+        }
+        Err(e) => {
+            warn!("API tokenizer failed: {}, falling back to tiktoken", e);
+            let count = count_tokens_tiktoken(text);
+            TOKEN_CACHE.set(text, count);
+            count
+        }
+    }
 }
 
 fn has_web_search(req: &MessagesRequest) -> bool {
@@ -108,6 +150,42 @@ pub fn select_model(req: &MessagesRequest, config: &Config) -> (String, &'static
     }
     let threshold = config.router.long_context_threshold.unwrap_or(60000);
     if count_tokens(req, &config.router.tokenizer_backend) as u64 > threshold {
+        if let Some(lc) = configured_route(config.router.long_context.as_deref()) {
+            return (lc.to_string(), "longContext");
+        }
+    }
+    (
+        config
+            .first_route_pool_route()
+            .unwrap_or_default()
+            .to_string(),
+        "routePool",
+    )
+}
+
+/// Async variant of `select_model` for server/runtime callers that may use an
+/// API tokenizer for long-context route detection.
+pub async fn select_model_async(req: &MessagesRequest, config: &Config) -> (String, &'static str) {
+    if let Some(m) = subagent_model(req) {
+        return (m, "subagent");
+    }
+    if req.model.contains("-haiku-") {
+        if let Some(bg) = configured_route(config.router.background.as_deref()) {
+            return (bg.to_string(), "background");
+        }
+    }
+    if has_web_search(req) {
+        if let Some(ws) = configured_route(config.router.web_search.as_deref()) {
+            return (ws.to_string(), "webSearch");
+        }
+    }
+    if req.thinking.is_some() {
+        if let Some(think) = configured_route(config.router.think.as_deref()) {
+            return (think.to_string(), "think");
+        }
+    }
+    let threshold = config.router.long_context_threshold.unwrap_or(60000);
+    if count_tokens_async(req, &config.router.tokenizer_backend).await as u64 > threshold {
         if let Some(lc) = configured_route(config.router.long_context.as_deref()) {
             return (lc.to_string(), "longContext");
         }
@@ -318,6 +396,68 @@ mod tests {
         }];
         let n = count_tokens(&req, &TokenizerBackend::Huggingface);
         assert!(n > 0);
+    }
+
+    #[tokio::test]
+    async fn count_tokens_async_api_falls_back_to_tiktoken() {
+        use ccr_types::{Message, TokenizerBackend};
+        let mut req = base_req();
+        req.messages = vec![Message {
+            role: "user".into(),
+            content: serde_json::json!("api async fallback unique"),
+        }];
+
+        let expected = count_tokens(&req, &TokenizerBackend::Tiktoken);
+        let n = count_tokens_async(
+            &req,
+            &TokenizerBackend::Api {
+                endpoint: "http://127.0.0.1:9/tokenize".into(),
+            },
+        )
+        .await;
+
+        assert_eq!(n, expected);
+    }
+
+    #[tokio::test]
+    async fn sync_count_tokens_api_inside_runtime_uses_local_fallback() {
+        use ccr_types::{Message, TokenizerBackend};
+        let mut req = base_req();
+        req.messages = vec![Message {
+            role: "user".into(),
+            content: serde_json::json!("sync api fallback inside runtime unique"),
+        }];
+
+        let expected = count_tokens(&req, &TokenizerBackend::Tiktoken);
+        let n = count_tokens(
+            &req,
+            &TokenizerBackend::Api {
+                endpoint: "http://127.0.0.1:9/tokenize".into(),
+            },
+        );
+
+        assert_eq!(n, expected);
+    }
+
+    #[tokio::test]
+    async fn select_model_async_uses_api_tokenizer_for_long_context() {
+        use ccr_types::{Message, TokenizerBackend};
+        let mut req = base_req();
+        req.messages = vec![Message {
+            role: "user".into(),
+            content: serde_json::json!("long context via async api fallback"),
+        }];
+        let mut config = base_config("openai,gpt-4o");
+        config.router.long_context = Some("anthropic,claude-long".into());
+        config.router.long_context_threshold = Some(0);
+        config.router.tokenizer_backend = TokenizerBackend::Api {
+            endpoint: "http://127.0.0.1:9/tokenize".into(),
+        };
+
+        let (model, reason) = select_model_async(&req, &config).await;
+
+        assert_eq!(model, "anthropic,claude-long");
+        assert_eq!(reason, "longContext");
     }
 
     #[test]

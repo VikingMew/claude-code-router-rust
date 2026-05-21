@@ -318,7 +318,7 @@ async fn count_tokens_handler(
         Ok(r) => r,
         Err(e) => return HttpResponse::BadRequest().body(e.to_string()),
     };
-    let n = ccr_router::count_tokens(&msg_req, &config.router.tokenizer_backend);
+    let n = ccr_router::count_tokens_async(&msg_req, &config.router.tokenizer_backend).await;
     HttpResponse::Ok().json(serde_json::json!({"input_tokens": n}))
 }
 
@@ -1873,7 +1873,9 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccr_types::{RoutePoolCandidate, RoutePoolConfig};
+    use actix_web::body::to_bytes;
+    use ccr_types::{Message, RoutePoolCandidate, RoutePoolConfig, TokenizerBackend};
+    use std::path::PathBuf;
 
     fn pool_config() -> Config {
         Config {
@@ -1889,6 +1891,56 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn test_state(config: Config) -> Arc<AppState> {
+        Arc::new(AppState {
+            reloadable_config: Arc::new(ReloadableConfig::new(
+                config,
+                PathBuf::from("/tmp/ccr-server-test-config.json"),
+            )),
+            transformers: Arc::new(TransformerRegistry::new()),
+            client: reqwest::Client::new(),
+            agents: vec![],
+            route_pool_state: Arc::new(Mutex::new(HashMap::new())),
+            metrics: Arc::new(Mutex::new(RuntimeMetricsStore::load(1000))),
+        })
+    }
+
+    #[actix_web::test]
+    async fn count_tokens_handler_uses_async_api_tokenizer_fallback() {
+        let mut config = Config {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        config.router.tokenizer_backend = TokenizerBackend::Api {
+            endpoint: "http://127.0.0.1:9/tokenize".into(),
+        };
+        let state = web::Data::new(test_state(config));
+        let msg_req = MessagesRequest {
+            model: "claude-3-5-sonnet".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: serde_json::json!("server handler async api fallback unique"),
+            }],
+            system: None,
+            tools: None,
+            max_tokens: Some(100),
+            stream: false,
+            thinking: None,
+        };
+        let expected = ccr_router::count_tokens(&msg_req, &TokenizerBackend::Tiktoken);
+        let req = actix_web::test::TestRequest::post()
+            .insert_header(("authorization", "Bearer test-key"))
+            .to_http_request();
+        let body = web::Bytes::from(serde_json::to_vec(&msg_req).unwrap());
+
+        let resp = count_tokens_handler(req, body, state).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let body = to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["input_tokens"].as_u64(), Some(expected as u64));
     }
 
     #[test]
