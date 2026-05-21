@@ -116,12 +116,11 @@ fn extract_project_id(_req: &MessagesRequest) -> Option<String> {
     }
 
     // Method 2: From current working directory .claude/project.json
-    if let Ok(content) = std::fs::read_to_string(".claude/project.json") {
-        if let Ok(project) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(id) = project["id"].as_str() {
-                return Some(id.to_string());
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(".claude/project.json")
+        && let Ok(project) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(id) = project["id"].as_str()
+    {
+        return Some(id.to_string());
     }
 
     // Method 3: From request metadata (if we add this field in the future)

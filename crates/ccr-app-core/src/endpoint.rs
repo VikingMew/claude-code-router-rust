@@ -34,7 +34,7 @@ pub struct EndpointTestRequest {
     pub model: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EndpointTestState {
     pub config: Config,
     pub selected_provider: usize,
@@ -43,20 +43,6 @@ pub struct EndpointTestState {
     pub testing: bool,
     pub status: String,
     pub confirm_apply_route_pool: bool,
-}
-
-impl Default for EndpointTestState {
-    fn default() -> Self {
-        Self {
-            config: Config::default(),
-            selected_provider: 0,
-            new_endpoint: String::new(),
-            test_results: Vec::new(),
-            testing: false,
-            status: String::new(),
-            confirm_apply_route_pool: false,
-        }
-    }
 }
 
 impl EndpointTestState {
@@ -246,11 +232,13 @@ pub fn test_endpoint(provider: &Provider, endpoint: &str) -> EndpointTestResult 
                     endpoint,
                     &test_request,
                     "available",
-                    Some(http_status),
-                    Some(elapsed),
-                    Some(stream_available),
-                    None,
-                    Some(&response_summary),
+                    EndpointResultDiagnostics {
+                        http_status: Some(http_status),
+                        latency_ms: Some(elapsed),
+                        stream_available: Some(stream_available),
+                        response: Some(&response_summary),
+                        ..Default::default()
+                    },
                 ),
             );
             EndpointTestResult {
@@ -269,11 +257,12 @@ pub fn test_endpoint(provider: &Provider, endpoint: &str) -> EndpointTestResult 
                     endpoint,
                     &test_request,
                     "http_error",
-                    Some(http_status),
-                    Some(elapsed),
-                    None,
-                    None,
-                    Some(&response_summary),
+                    EndpointResultDiagnostics {
+                        http_status: Some(http_status),
+                        latency_ms: Some(elapsed),
+                        response: Some(&response_summary),
+                        ..Default::default()
+                    },
                 ),
             );
             http_error_endpoint_result(provider, endpoint, http_status, elapsed, &response_summary)
@@ -297,11 +286,10 @@ pub fn test_endpoint(provider: &Provider, endpoint: &str) -> EndpointTestResult 
                     endpoint,
                     &test_request,
                     status_text,
-                    None,
-                    None,
-                    None,
-                    Some(&error_text),
-                    None,
+                    EndpointResultDiagnostics {
+                        error: Some(&error_text),
+                        ..Default::default()
+                    },
                 ),
             );
             request_error_endpoint_result(provider, endpoint, status, error_text)
@@ -345,11 +333,13 @@ fn check_stream_endpoint(client: &Client, provider: &Provider, endpoint: &str) -
                     } else {
                         "unavailable"
                     },
-                    Some(http_status),
-                    Some(elapsed),
-                    Some(stream_available),
-                    None,
-                    Some(&response_summary),
+                    EndpointResultDiagnostics {
+                        http_status: Some(http_status),
+                        latency_ms: Some(elapsed),
+                        stream_available: Some(stream_available),
+                        response: Some(&response_summary),
+                        ..Default::default()
+                    },
                 ),
             );
             stream_available
@@ -367,11 +357,12 @@ fn check_stream_endpoint(client: &Client, provider: &Provider, endpoint: &str) -
                     } else {
                         "network_error"
                     },
-                    None,
-                    Some(elapsed),
-                    Some(false),
-                    Some(&error_text),
-                    None,
+                    EndpointResultDiagnostics {
+                        latency_ms: Some(elapsed),
+                        stream_available: Some(false),
+                        error: Some(&error_text),
+                        ..Default::default()
+                    },
                 ),
             );
             false
@@ -479,16 +470,21 @@ fn log_endpoint_start(provider: &Provider, endpoint: &str, request: &EndpointTes
     );
 }
 
+#[derive(Default)]
+struct EndpointResultDiagnostics<'a> {
+    http_status: Option<u16>,
+    latency_ms: Option<u64>,
+    stream_available: Option<bool>,
+    error: Option<&'a str>,
+    response: Option<&'a str>,
+}
+
 fn endpoint_result_fields(
     provider: &Provider,
     endpoint: &str,
     request: &EndpointTestRequest,
     status: &str,
-    http_status: Option<u16>,
-    latency_ms: Option<u64>,
-    stream_available: Option<bool>,
-    error: Option<&str>,
-    response: Option<&str>,
+    diagnostics: EndpointResultDiagnostics<'_>,
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![
         ("provider", provider.name.clone()),
@@ -498,19 +494,19 @@ fn endpoint_result_fields(
         ("model", request.model.clone()),
         ("status", status.to_string()),
     ];
-    if let Some(http_status) = http_status {
+    if let Some(http_status) = diagnostics.http_status {
         fields.push(("http_status", http_status.to_string()));
     }
-    if let Some(latency_ms) = latency_ms {
+    if let Some(latency_ms) = diagnostics.latency_ms {
         fields.push(("latency_ms", latency_ms.to_string()));
     }
-    if let Some(stream_available) = stream_available {
+    if let Some(stream_available) = diagnostics.stream_available {
         fields.push(("stream_available", stream_available.to_string()));
     }
-    if let Some(error) = error {
+    if let Some(error) = diagnostics.error {
         fields.push(("error", crate::logging::response_log_summary(error)));
     }
-    if let Some(response) = response {
+    if let Some(response) = diagnostics.response {
         fields.push(("response", response.to_string()));
     }
     fields
@@ -888,11 +884,13 @@ mod tests {
             "https://api.example.com/v1/messages",
             &request,
             "http_error",
-            Some(429),
-            Some(12),
-            Some(false),
-            Some("rate limited"),
-            Some("{\"error\":\"rate limited\"}"),
+            EndpointResultDiagnostics {
+                http_status: Some(429),
+                latency_ms: Some(12),
+                stream_available: Some(false),
+                error: Some("rate limited"),
+                response: Some("{\"error\":\"rate limited\"}"),
+            },
         );
 
         assert!(fields.contains(&("http_status", "429".to_string())));

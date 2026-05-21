@@ -171,10 +171,10 @@ fn anthropic_body_to_openai_chat(mut body: Value, upstream_model: &str) -> Resul
         .ok_or_else(|| "Anthropic Messages request is missing messages".to_string())?;
     let mut converted_messages: Vec<Value> = Vec::new();
 
-    if let Some(system) = body.get("system") {
-        if let Some(text) = text_from_system(system) {
-            converted_messages.push(serde_json::json!({"role": "system", "content": text}));
-        }
+    if let Some(system) = body.get("system")
+        && let Some(text) = text_from_system(system)
+    {
+        converted_messages.push(serde_json::json!({"role": "system", "content": text}));
     }
 
     for message in messages {
@@ -1494,47 +1494,51 @@ mod tests {
 
     #[test]
     fn route_pool_candidates_sort_skip_disabled_and_deduplicate() {
-        let mut config = Config::default();
-        config.route_pool = Some(ccr_types::RoutePoolConfig {
-            enabled: true,
-            failure_threshold: 3,
-            ban_seconds: 3600,
-            candidates: vec![
-                ccr_types::RoutePoolCandidate {
-                    route: "b".into(),
-                    enabled: true,
-                    priority: 2,
-                },
-                ccr_types::RoutePoolCandidate {
-                    route: "a".into(),
-                    enabled: true,
-                    priority: 1,
-                },
-                ccr_types::RoutePoolCandidate {
-                    route: "c".into(),
-                    enabled: false,
-                    priority: 0,
-                },
-                ccr_types::RoutePoolCandidate {
-                    route: "a".into(),
-                    enabled: true,
-                    priority: 3,
-                },
-            ],
-        });
+        let config = Config {
+            route_pool: Some(ccr_types::RoutePoolConfig {
+                enabled: true,
+                failure_threshold: 3,
+                ban_seconds: 3600,
+                candidates: vec![
+                    ccr_types::RoutePoolCandidate {
+                        route: "b".into(),
+                        enabled: true,
+                        priority: 2,
+                    },
+                    ccr_types::RoutePoolCandidate {
+                        route: "a".into(),
+                        enabled: true,
+                        priority: 1,
+                    },
+                    ccr_types::RoutePoolCandidate {
+                        route: "c".into(),
+                        enabled: false,
+                        priority: 0,
+                    },
+                    ccr_types::RoutePoolCandidate {
+                        route: "a".into(),
+                        enabled: true,
+                        priority: 3,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(route_pool_candidates(&config, &[]), vec!["a", "b"]);
     }
 
     #[test]
     fn route_pool_defaults_are_clamped() {
-        let mut config = Config::default();
-        config.route_pool = Some(ccr_types::RoutePoolConfig {
-            enabled: true,
-            failure_threshold: 0,
-            ban_seconds: 0,
-            candidates: vec![],
-        });
+        let config = Config {
+            route_pool: Some(ccr_types::RoutePoolConfig {
+                enabled: true,
+                failure_threshold: 0,
+                ban_seconds: 0,
+                candidates: vec![],
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(route_pool_failure_threshold(&config), 1);
         assert_eq!(route_pool_ban_seconds(&config), 1);

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,28 +41,28 @@ fn list_backups_in_dir(backup_dir: &Path) -> Result<Vec<BackupInfo>> {
 
     let mut backups = Vec::new();
 
-    for entry in fs::read_dir(&backup_dir)? {
+    for entry in fs::read_dir(backup_dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("config.") {
-                    let metadata = fs::metadata(&path)?;
-                    let modified = metadata.modified()?;
+        if path.is_file()
+            && path.extension().is_some_and(|ext| ext == "json")
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with("config.")
+        {
+            let metadata = fs::metadata(&path)?;
+            let modified = metadata.modified()?;
 
-                    backups.push(BackupInfo {
-                        path: path.clone(),
-                        name: name.to_string(),
-                        created: modified,
-                    });
-                }
-            }
+            backups.push(BackupInfo {
+                path: path.clone(),
+                name: name.to_string(),
+                created: modified,
+            });
         }
     }
 
     // Sort by creation time (newest first)
-    backups.sort_by(|a, b| b.created.cmp(&a.created));
+    backups.sort_by_key(|backup| Reverse(backup.created));
 
     Ok(backups)
 }

@@ -55,10 +55,10 @@ impl Agent for ImageAgent {
 
     fn detect(&self, req: &MessagesRequest, config: &Config) -> Option<String> {
         // If already routed to image model, don't handle
-        if let Some(image_model) = &config.router.image {
-            if req.model.contains(image_model) {
-                return None;
-            }
+        if let Some(image_model) = &config.router.image
+            && req.model.contains(image_model)
+        {
+            return None;
         }
 
         let image_model = config.router.image.as_ref()?;

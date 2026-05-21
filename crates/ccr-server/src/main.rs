@@ -551,6 +551,7 @@ struct RequestMetricContext {
     requested_model: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_with_route_pool(
     client: &reqwest::Client,
     config: &Config,

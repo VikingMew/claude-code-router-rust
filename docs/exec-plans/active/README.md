@@ -9,6 +9,9 @@ Rules:
 
 - One complex workstream per plan.
 - Use `plan-001`, `plan-002` style IDs for all new workstreams.
+- Canonical active plan files must be named `plan-NNN-*.md`.
+- Do not commit generated notes, scratch workpads or handoff artifacts under
+  `docs/exec-plans/active/`; keep only active plan records here.
 - Every active plan must follow PDCA: the normal plan sections are `Plan`;
   `Do / 执行记录`, `Check / 验证与偏差` and `Act / 处理与沉淀` are updated as work
   progresses.
