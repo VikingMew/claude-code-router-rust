@@ -23,6 +23,12 @@ impl PresetTab {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Presets");
+        });
+        show_status_message(ui, &self.status);
+
+        ui.separator();
         self.show_default_profiles(ui);
         ui.separator();
 
@@ -45,9 +51,6 @@ impl PresetTab {
                 Ok(_) => self.status = format!("Deleted '{name}'."),
                 Err(e) => self.status = format!("Error: {e}"),
             }
-        }
-        if !self.status.is_empty() {
-            ui.label(&self.status);
         }
     }
 
@@ -144,6 +147,18 @@ impl PresetTab {
 impl Default for PresetTab {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn show_status_message(ui: &mut egui::Ui, message: &str) {
+    if message.is_empty() {
+        return;
+    }
+
+    if message.starts_with("Error") {
+        ui.colored_label(egui::Color32::RED, message);
+    } else {
+        ui.colored_label(egui::Color32::GREEN, message);
     }
 }
 

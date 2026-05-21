@@ -38,7 +38,17 @@ impl ConfigTab {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("Providers");
+            ui.heading("Config");
+            if ui.button("Save").clicked() {
+                ensure_inferred_provider_api_kinds(&mut self.config);
+                match save_config(&self.config, &default_config_path()) {
+                    Ok(_) => self.status = "Saved.".into(),
+                    Err(e) => self.status = format!("Error: {e}"),
+                }
+            }
+            if ui.button("Reload Config").clicked() {
+                self.reload_config();
+            }
             if ui
                 .add_enabled(
                     !self.testing_providers && !self.config.providers.is_empty(),
@@ -53,6 +63,11 @@ impl ConfigTab {
                 ui.label("Testing providers...");
             }
         });
+        show_status_message(ui, &self.status);
+        show_status_message(ui, &self.reload_status);
+
+        ui.separator();
+        ui.heading("Providers");
 
         let mut to_remove: Option<usize> = None;
         for (i, p) in self.config.providers.iter_mut().enumerate() {
@@ -100,27 +115,6 @@ impl ConfigTab {
         }
 
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
-                ensure_inferred_provider_api_kinds(&mut self.config);
-                match save_config(&self.config, &default_config_path()) {
-                    Ok(_) => self.status = "Saved.".into(),
-                    Err(e) => self.status = format!("Error: {e}"),
-                }
-            }
-
-            if ui.button("🔄 Reload Config").clicked() {
-                self.reload_config();
-            }
-        });
-
-        if !self.status.is_empty() {
-            ui.label(&self.status);
-        }
-
-        if !self.reload_status.is_empty() {
-            ui.label(&self.reload_status);
-        }
     }
 
     fn reload_config(&mut self) {
@@ -307,6 +301,20 @@ fn truncate(value: &str, max_chars: usize) -> String {
         format!("{truncated}...")
     } else {
         truncated
+    }
+}
+
+fn show_status_message(ui: &mut egui::Ui, message: &str) {
+    if message.is_empty() {
+        return;
+    }
+
+    if message.starts_with("Error") || message.contains("❌") {
+        ui.colored_label(egui::Color32::RED, message);
+    } else if message.starts_with("Warning") {
+        ui.colored_label(egui::Color32::YELLOW, message);
+    } else {
+        ui.colored_label(egui::Color32::GREEN, message);
     }
 }
 
