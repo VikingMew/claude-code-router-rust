@@ -63,7 +63,7 @@ Linear CCR-28 最新人工评论要求 UI-first：官方 provider 应提示来�
   - 更新 provider API kind 文档和官方 reference。
 - 实际偏离计划:
   - GitHub Copilot 仅展示官方 endpoint profile，Route Pool candidate disabled，不自动启用。
-  - 无法完成 workspace/server/ui 编译验证，原因是本机磁盘空间耗尽。
+  - 无法完成 workspace/ui 测试验证，原因是本机磁盘空间耗尽。
 - 中途决策:
   - Copilot 不实现本地 token 读取，因为 GitHub 官方文档只说明 Copilot agent 场景中的 agent-provided token/header。
 
@@ -73,6 +73,7 @@ Linear CCR-28 最新人工评论要求 UI-first：官方 provider 应提示来�
   - `cargo fmt --check` - pass。
   - `cargo test --package ccr-preset` - pass，12 tests。
   - `cargo test --package ccr-app-core` - pass，183 tests。
+  - `CARGO_INCREMENTAL=0 cargo check --package ccr-server --lib -j 1` - pass。
   - `cargo test --package ccr-server` - blocked by environment: `No space left on device` while compiling dependencies before CCR source compile.
   - `cargo test --package ccr-ui` - blocked by environment: `No space left on device` while creating target files.
   - `cargo test --workspace` - not run because disk had only about 117 MiB available before cleaning target and about 947 MiB after cleaning target, still insufficient for server/UI/workspace dependency builds.
@@ -100,4 +101,5 @@ Linear CCR-28 最新人工评论要求 UI-first：官方 provider 应提示来�
 
 ## 完成记录
 
-- 2026-05-22: 实现完成；target 清理后仍无法完成 server/ui/workspace 编译验证，阻塞原因为本机磁盘空间不足。
+- 2026-05-22: 实现完成；target 清理后仍无法完成 server/ui/workspace 测试验证，阻塞原因为本机磁盘空间不足。
+- 2026-05-22 continuation: 单线程、非增量 server lib check 通过：`CARGO_INCREMENTAL=0 cargo check --package ccr-server --lib -j 1`。
