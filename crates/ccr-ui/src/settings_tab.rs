@@ -179,7 +179,12 @@ impl SettingsTab {
             "OpenClaw config path",
             &mut self.state.config.app_settings.openclaw_config_path,
         );
-        ui.label("OpenCode and OpenClaw use additive provider entries; saving paths does not move files.");
+        edit_optional_string(
+            ui,
+            "Hermes config path",
+            &mut self.state.config.app_settings.hermes_config_path,
+        );
+        ui.label("OpenCode, OpenClaw and Hermes use additive provider entries; saving paths does not move files.");
     }
 
     fn show_network(&mut self, ui: &mut egui::Ui) {
