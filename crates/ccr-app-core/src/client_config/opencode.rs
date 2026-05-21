@@ -176,8 +176,8 @@ fn client_model_from_route(route: &str) -> String {
         return DEFAULT_MODEL.to_string();
     }
     route
-        .splitn(2, ',')
-        .nth(1)
+        .split_once(',')
+        .map(|split| split.1)
         .unwrap_or(DEFAULT_MODEL)
         .trim()
         .to_string()

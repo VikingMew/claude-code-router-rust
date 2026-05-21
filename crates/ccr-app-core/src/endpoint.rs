@@ -45,6 +45,7 @@ pub struct EndpointTestState {
     pub confirm_apply_route_pool: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for EndpointTestState {
     fn default() -> Self {
         Self {
@@ -479,6 +480,7 @@ fn log_endpoint_start(provider: &Provider, endpoint: &str, request: &EndpointTes
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn endpoint_result_fields(
     provider: &Provider,
     endpoint: &str,

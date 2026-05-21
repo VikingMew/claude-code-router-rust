@@ -390,11 +390,7 @@ impl SummaryBuilder {
             attempts: self.attempts,
             successes: self.successes,
             failures: self.failures,
-            average_latency_ms: if self.latency_count == 0 {
-                None
-            } else {
-                Some(self.latency_sum / self.latency_count)
-            },
+            average_latency_ms: self.latency_sum.checked_div(self.latency_count),
             last_http_status: self.last_http_status,
             last_error_class: self.last_error_class,
         }

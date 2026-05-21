@@ -45,30 +45,28 @@ impl Transformer for OpenAITransformer {
 
         if let Some(Value::Array(msgs)) = obj.get_mut("messages") {
             for msg in msgs.iter_mut() {
-                if let Some(content) = msg.get("content") {
-                    if let Value::Array(blocks) = content {
-                        let text: Option<String> = if blocks.len() == 1 {
-                            blocks[0]
-                                .get("text")
-                                .and_then(|t| t.as_str())
-                                .map(|t| t.to_string())
-                        } else {
-                            None
-                        };
-                        if let Some(t) = text {
-                            if let Some(m) = msg.as_object_mut() {
-                                m.insert("content".into(), Value::String(t));
-                            }
-                        }
+                if let Some(Value::Array(blocks)) = msg.get("content") {
+                    let text: Option<String> = if blocks.len() == 1 {
+                        blocks[0]
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|t| t.to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(t) = text
+                        && let Some(m) = msg.as_object_mut()
+                    {
+                        m.insert("content".into(), Value::String(t));
                     }
                 }
             }
         }
 
-        if let Some(sys) = system_msg {
-            if let Some(Value::Array(msgs)) = obj.get_mut("messages") {
-                msgs.insert(0, sys);
-            }
+        if let Some(sys) = system_msg
+            && let Some(Value::Array(msgs)) = obj.get_mut("messages")
+        {
+            msgs.insert(0, sys);
         }
 
         obj.remove("thinking");
@@ -87,10 +85,10 @@ impl Transformer for DeepSeekTransformer {
     }
 
     fn transform_request(&self, mut req: Value) -> Value {
-        if let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64()) {
-            if mt > 8192 {
-                req["max_tokens"] = json!(8192u64);
-            }
+        if let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64())
+            && mt > 8192
+        {
+            req["max_tokens"] = json!(8192u64);
         }
         req
     }
@@ -106,10 +104,10 @@ impl Transformer for MaxTokenTransformer {
         "maxtoken"
     }
     fn transform_request(&self, mut req: Value) -> Value {
-        if let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64()) {
-            if mt > self.0 {
-                req["max_tokens"] = json!(self.0);
-            }
+        if let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64())
+            && mt > self.0
+        {
+            req["max_tokens"] = json!(self.0);
         }
         req
     }
@@ -149,30 +147,28 @@ impl Transformer for GeminiTransformer {
             }
         }
 
-        if let Some(msgs) = obj.remove("messages") {
-            if let Value::Array(arr) = msgs {
-                let contents: Vec<Value> = arr
-                    .into_iter()
-                    .map(|mut m| {
-                        if m.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                            if let Some(o) = m.as_object_mut() {
-                                o.insert("role".into(), json!("model"));
-                            }
-                        }
-                        if let Some(o) = m.as_object_mut() {
-                            if let Some(c) = o.remove("content") {
-                                let parts = match c {
-                                    Value::String(t) => json!([{"text": t}]),
-                                    other => other,
-                                };
-                                o.insert("parts".into(), parts);
-                            }
-                        }
-                        m
-                    })
-                    .collect();
-                obj.insert("contents".into(), Value::Array(contents));
-            }
+        if let Some(Value::Array(arr)) = obj.remove("messages") {
+            let contents: Vec<Value> = arr
+                .into_iter()
+                .map(|mut m| {
+                    if m.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                        && let Some(o) = m.as_object_mut()
+                    {
+                        o.insert("role".into(), json!("model"));
+                    }
+                    if let Some(o) = m.as_object_mut()
+                        && let Some(c) = o.remove("content")
+                    {
+                        let parts = match c {
+                            Value::String(t) => json!([{"text": t}]),
+                            other => other,
+                        };
+                        o.insert("parts".into(), parts);
+                    }
+                    m
+                })
+                .collect();
+            obj.insert("contents".into(), Value::Array(contents));
         }
 
         obj.remove("thinking");
@@ -208,23 +204,21 @@ impl Transformer for ToolUseTransformer {
 
     fn transform_request(&self, mut req: Value) -> Value {
         // Convert tools from Anthropic format to OpenAI functions format
-        if let Some(tools) = req.get("tools").cloned() {
-            if let Value::Array(arr) = tools {
-                let functions: Vec<Value> = arr
-                    .into_iter()
-                    .map(|t| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": t.get("name").cloned().unwrap_or(Value::Null),
-                                "description": t.get("description").cloned().unwrap_or(Value::Null),
-                                "parameters": t.get("input_schema").cloned().unwrap_or(json!({}))
-                            }
-                        })
+        if let Some(Value::Array(arr)) = req.get("tools").cloned() {
+            let functions: Vec<Value> = arr
+                .into_iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.get("name").cloned().unwrap_or(Value::Null),
+                            "description": t.get("description").cloned().unwrap_or(Value::Null),
+                            "parameters": t.get("input_schema").cloned().unwrap_or(json!({}))
+                        }
                     })
-                    .collect();
-                req["tools"] = Value::Array(functions);
-            }
+                })
+                .collect();
+            req["tools"] = Value::Array(functions);
         }
         req
     }
@@ -363,35 +357,33 @@ impl Transformer for EnhanceToolTransformer {
 
     fn transform_response(&self, mut res: Value) -> Value {
         // Fix common tool call response errors
-        if let Some(content) = res.get_mut("content") {
-            if let Value::Array(blocks) = content {
-                for block in blocks.iter_mut() {
-                    if let Value::Object(obj) = block {
-                        // Fix tool_use blocks
-                        if obj.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                            // Ensure id field exists
-                            if obj.get("id").is_none()
-                                || obj["id"].as_str().map(|s| s.is_empty()).unwrap_or(true)
-                            {
-                                obj.insert(
-                                    "id".into(),
-                                    json!(format!("toolu_{}", uuid::Uuid::new_v4())),
-                                );
-                            }
+        if let Some(Value::Array(blocks)) = res.get_mut("content") {
+            for block in blocks.iter_mut() {
+                if let Value::Object(obj) = block {
+                    // Fix tool_use blocks
+                    if obj.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        // Ensure id field exists
+                        if obj.get("id").is_none()
+                            || obj["id"].as_str().map(|s| s.is_empty()).unwrap_or(true)
+                        {
+                            obj.insert(
+                                "id".into(),
+                                json!(format!("toolu_{}", uuid::Uuid::new_v4())),
+                            );
+                        }
 
-                            // Ensure name field exists
-                            if obj.get("name").is_none() {
-                                obj.insert("name".into(), json!("unknown"));
-                            }
+                        // Ensure name field exists
+                        if obj.get("name").is_none() {
+                            obj.insert("name".into(), json!("unknown"));
+                        }
 
-                            // Ensure input is valid JSON
-                            if let Some(input) = obj.get_mut("input") {
-                                if input.is_null() {
-                                    *input = json!({});
-                                }
-                            } else {
-                                obj.insert("input".into(), json!({}));
+                        // Ensure input is valid JSON
+                        if let Some(input) = obj.get_mut("input") {
+                            if input.is_null() {
+                                *input = json!({});
                             }
+                        } else {
+                            obj.insert("input".into(), json!({}));
                         }
                     }
                 }
@@ -410,19 +402,18 @@ impl Transformer for MaxCompletionTokensTransformer {
 
     fn transform_request(&self, mut req: Value) -> Value {
         // Handle both max_completion_tokens and max_tokens fields
-        if let Some(mct) = req.get("max_completion_tokens").and_then(|v| v.as_u64()) {
-            if mct > self.0 {
-                req["max_completion_tokens"] = json!(self.0);
-            }
+        if let Some(mct) = req.get("max_completion_tokens").and_then(|v| v.as_u64())
+            && mct > self.0
+        {
+            req["max_completion_tokens"] = json!(self.0);
         }
 
         // Also check max_tokens as fallback
-        if req.get("max_completion_tokens").is_none() {
-            if let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64()) {
-                if mt > self.0 {
-                    req["max_tokens"] = json!(self.0);
-                }
-            }
+        if req.get("max_completion_tokens").is_none()
+            && let Some(mt) = req.get("max_tokens").and_then(|v| v.as_u64())
+            && mt > self.0
+        {
+            req["max_tokens"] = json!(self.0);
         }
         req
     }

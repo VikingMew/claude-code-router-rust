@@ -293,18 +293,15 @@ fn default_claude_code_opus_model() -> String {
     String::new()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase", untagged)]
 pub enum TokenizerBackend {
+    #[default]
     Tiktoken,
     Huggingface,
-    Api { endpoint: String },
-}
-
-impl Default for TokenizerBackend {
-    fn default() -> Self {
-        TokenizerBackend::Tiktoken
-    }
+    Api {
+        endpoint: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,6 +436,11 @@ mod tests {
 
         assert!(candidate.enabled);
         assert_eq!(candidate.priority, 0);
+    }
+
+    #[test]
+    fn tokenizer_backend_default_is_tiktoken() {
+        assert_eq!(TokenizerBackend::default(), TokenizerBackend::Tiktoken);
     }
 
     #[test]

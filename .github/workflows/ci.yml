@@ -24,5 +24,7 @@ jobs:
         run: ./scripts/check-docs-structure.sh
       - name: Rust fmt
         run: cargo fmt --check
+      - name: Workspace clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Workspace tests
         run: cargo test --workspace

@@ -114,7 +114,7 @@ async fn count_tokens_api_with_fallback(text: &str, endpoint: &str) -> usize {
 }
 
 fn has_web_search(req: &MessagesRequest) -> bool {
-    req.tools.as_ref().map_or(false, |tools| {
+    req.tools.as_ref().is_some_and(|tools| {
         tools
             .iter()
             .any(|t| t.get("name").and_then(|n| n.as_str()) == Some("web_search"))
@@ -133,26 +133,26 @@ pub fn select_model(req: &MessagesRequest, config: &Config) -> (String, &'static
     if let Some(m) = subagent_model(req) {
         return (m, "subagent");
     }
-    if req.model.contains("-haiku-") {
-        if let Some(bg) = configured_route(config.router.background.as_deref()) {
-            return (bg.to_string(), "background");
-        }
+    if req.model.contains("-haiku-")
+        && let Some(bg) = configured_route(config.router.background.as_deref())
+    {
+        return (bg.to_string(), "background");
     }
-    if has_web_search(req) {
-        if let Some(ws) = configured_route(config.router.web_search.as_deref()) {
-            return (ws.to_string(), "webSearch");
-        }
+    if has_web_search(req)
+        && let Some(ws) = configured_route(config.router.web_search.as_deref())
+    {
+        return (ws.to_string(), "webSearch");
     }
-    if req.thinking.is_some() {
-        if let Some(think) = configured_route(config.router.think.as_deref()) {
-            return (think.to_string(), "think");
-        }
+    if req.thinking.is_some()
+        && let Some(think) = configured_route(config.router.think.as_deref())
+    {
+        return (think.to_string(), "think");
     }
     let threshold = config.router.long_context_threshold.unwrap_or(60000);
-    if count_tokens(req, &config.router.tokenizer_backend) as u64 > threshold {
-        if let Some(lc) = configured_route(config.router.long_context.as_deref()) {
-            return (lc.to_string(), "longContext");
-        }
+    if count_tokens(req, &config.router.tokenizer_backend) as u64 > threshold
+        && let Some(lc) = configured_route(config.router.long_context.as_deref())
+    {
+        return (lc.to_string(), "longContext");
     }
     (
         config
@@ -169,26 +169,26 @@ pub async fn select_model_async(req: &MessagesRequest, config: &Config) -> (Stri
     if let Some(m) = subagent_model(req) {
         return (m, "subagent");
     }
-    if req.model.contains("-haiku-") {
-        if let Some(bg) = configured_route(config.router.background.as_deref()) {
-            return (bg.to_string(), "background");
-        }
+    if req.model.contains("-haiku-")
+        && let Some(bg) = configured_route(config.router.background.as_deref())
+    {
+        return (bg.to_string(), "background");
     }
-    if has_web_search(req) {
-        if let Some(ws) = configured_route(config.router.web_search.as_deref()) {
-            return (ws.to_string(), "webSearch");
-        }
+    if has_web_search(req)
+        && let Some(ws) = configured_route(config.router.web_search.as_deref())
+    {
+        return (ws.to_string(), "webSearch");
     }
-    if req.thinking.is_some() {
-        if let Some(think) = configured_route(config.router.think.as_deref()) {
-            return (think.to_string(), "think");
-        }
+    if req.thinking.is_some()
+        && let Some(think) = configured_route(config.router.think.as_deref())
+    {
+        return (think.to_string(), "think");
     }
     let threshold = config.router.long_context_threshold.unwrap_or(60000);
-    if count_tokens_async(req, &config.router.tokenizer_backend).await as u64 > threshold {
-        if let Some(lc) = configured_route(config.router.long_context.as_deref()) {
-            return (lc.to_string(), "longContext");
-        }
+    if count_tokens_async(req, &config.router.tokenizer_backend).await as u64 > threshold
+        && let Some(lc) = configured_route(config.router.long_context.as_deref())
+    {
+        return (lc.to_string(), "longContext");
     }
     (
         config
@@ -210,7 +210,10 @@ pub fn find_provider<'a>(model_str: &str, config: &'a Config) -> Option<&'a Prov
 }
 
 pub fn model_name(model_str: &str) -> &str {
-    model_str.splitn(2, ',').nth(1).unwrap_or(model_str)
+    model_str
+        .split_once(',')
+        .map(|split| split.1)
+        .unwrap_or(model_str)
 }
 
 /// Load project-level router overrides from ~/.claude/projects/<project_id>/claude-code-router.json
