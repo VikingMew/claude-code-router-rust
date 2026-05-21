@@ -1262,8 +1262,6 @@ dependencies = [
  "eframe",
  "gtk",
  "image",
- "nix",
- "reqwest",
  "serde",
  "serde_json",
  "tray-icon",
