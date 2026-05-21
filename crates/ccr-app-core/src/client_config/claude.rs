@@ -1,6 +1,11 @@
+#[cfg(test)]
+use super::common::set_secure_permissions;
+use super::common::{
+    BackupSpec, RestoreSpec, atomic_write, backup_or_mark_missing, ccr_config, ccr_port,
+    configured_path_from_settings, restore_backup_or_remove_generated,
+};
 use crate::status::{InjectionSnapshot, is_process_alive, pid_file_path, read_pid};
 use anyhow::{Context, Result};
-use ccr_config::{default_config_path, load_config};
 use ccr_types::ClaudeCodeModelSettings;
 use serde_json::{Value, json};
 use std::fs;
@@ -8,6 +13,13 @@ use std::path::PathBuf;
 
 /// Get Claude Code settings file path.
 pub fn claude_config_path() -> PathBuf {
+    configured_path_from_settings(
+        |settings| settings.claude_config_path.clone(),
+        default_claude_config_path,
+    )
+}
+
+fn default_claude_config_path() -> PathBuf {
     dirs_next::home_dir()
         .expect("Cannot determine home directory")
         .join(".claude")
@@ -130,131 +142,6 @@ fn claude_settings_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
         == Some(format!("http://127.0.0.1:{port}").as_str())
 }
 
-/// Set file permissions to owner read/write only.
-#[cfg(unix)]
-fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
-    use anyhow::Context;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, LocalFree,
-    };
-    use windows_sys::Win32::Security::Authorization::{
-        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW,
-        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
-    };
-    use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetTokenInformation, NO_INHERITANCE,
-        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let mut token = null_mut();
-    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
-    if opened == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("Failed to open process token for Claude config ACL");
-    }
-
-    let result = (|| {
-        let mut token_info_len = 0;
-        let queried =
-            unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut token_info_len) };
-        if queried == 0
-            && std::io::Error::last_os_error().raw_os_error()
-                != Some(ERROR_INSUFFICIENT_BUFFER as i32)
-        {
-            return Err(std::io::Error::last_os_error())
-                .context("Failed to size current user token information");
-        }
-
-        let mut token_info = vec![0u8; token_info_len as usize];
-        let queried = unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                token_info.as_mut_ptr().cast(),
-                token_info_len,
-                &mut token_info_len,
-            )
-        };
-        if queried == 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("Failed to read current user token information");
-        }
-
-        let token_user = unsafe { &*(token_info.as_ptr().cast::<TOKEN_USER>()) };
-        let user_sid = token_user.User.Sid;
-        let trustee = TRUSTEE_W {
-            pMultipleTrustee: null_mut(),
-            MultipleTrusteeOperation: 0,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_USER,
-            ptstrName: user_sid.cast(),
-        };
-        let access = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-            grfAccessMode: SET_ACCESS,
-            grfInheritance: NO_INHERITANCE,
-            Trustee: trustee,
-        };
-
-        let mut acl = null_mut();
-        let status = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
-        if status != ERROR_SUCCESS {
-            return Err(std::io::Error::from_raw_os_error(status as i32))
-                .context("Failed to build Claude config ACL");
-        }
-
-        let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let security_info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_mut_ptr(),
-                SE_FILE_OBJECT,
-                security_info,
-                null_mut(),
-                null_mut(),
-                acl,
-                null(),
-            )
-        };
-
-        unsafe {
-            LocalFree(acl.cast());
-        }
-
-        if status != ERROR_SUCCESS {
-            return Err(std::io::Error::from_raw_os_error(status as i32)).with_context(|| {
-                format!("Failed to set Claude config ACL for {}", path.display())
-            });
-        }
-
-        Ok(())
-    })();
-
-    unsafe {
-        CloseHandle(token);
-    }
-
-    result
-}
-
-#[cfg(not(any(unix, windows)))]
-fn set_secure_permissions(_path: &std::path::Path) -> Result<()> {
-    Ok(())
-}
-
 /// Activate CCR: backup Claude config and install CCR config
 pub fn activate_ccr() -> Result<()> {
     let claude_path = claude_config_path();
@@ -294,8 +181,8 @@ pub fn activate_ccr() -> Result<()> {
         &plugin_missing_marker,
     )?;
 
-    let ccr_config = load_config(&default_config_path()).context("Failed to load CCR config")?;
-    let port = ccr_config.port.unwrap_or(3456);
+    let ccr_config = ccr_config()?;
+    let port = ccr_port(&ccr_config);
     install_claude_settings(
         &claude_path,
         &original_json,
@@ -339,25 +226,22 @@ fn prepare_claude_activation_files(
     timestamped_backup: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<String> {
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create backup directory")?;
-    }
-    if let Some(parent) = claude_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create Claude config directory")?;
-    }
-
-    if claude_path.exists() {
-        let content = fs::read_to_string(claude_path).context("Failed to read Claude settings")?;
-        fs::copy(claude_path, backup_path).context("Failed to create backup")?;
-        set_secure_permissions(backup_path)?;
-        fs::copy(claude_path, timestamped_backup).context("Failed to create timestamped backup")?;
-        set_secure_permissions(timestamped_backup)?;
-        Ok(content)
-    } else {
-        fs::write(missing_marker, b"missing").context("Failed to create missing config marker")?;
-        set_secure_permissions(missing_marker)?;
-        Ok(String::new())
-    }
+    backup_or_mark_missing(
+        BackupSpec {
+            source_path: claude_path,
+            backup_path,
+            timestamped_backup_path: Some(timestamped_backup),
+            missing_marker_path: missing_marker,
+            already_active_message: "CCR is already activated. Run 'ccr deactivate' first.",
+            source_dir_context: "Failed to create Claude config directory",
+            backup_dir_context: "Failed to create backup directory",
+            read_context: "Failed to read Claude settings",
+            backup_context: "Failed to create backup",
+            timestamped_backup_context: "Failed to create timestamped backup",
+            missing_marker_context: "Failed to create missing config marker",
+        },
+        |_| Ok(()),
+    )
 }
 
 fn prepare_claude_plugin_activation_files(
@@ -365,27 +249,26 @@ fn prepare_claude_plugin_activation_files(
     backup_path: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<String> {
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create backup directory")?;
-    }
-    if let Some(parent) = plugin_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create Claude config directory")?;
-    }
-
-    if plugin_path.exists() {
-        let content =
-            fs::read_to_string(plugin_path).context("Failed to read Claude plugin config")?;
-        serde_json::from_str::<Value>(&content)
-            .context("Claude plugin config file is invalid JSON")?;
-        fs::copy(plugin_path, backup_path).context("Failed to create Claude plugin backup")?;
-        set_secure_permissions(backup_path)?;
-        Ok(content)
-    } else {
-        fs::write(missing_marker, b"missing")
-            .context("Failed to create missing plugin config marker")?;
-        set_secure_permissions(missing_marker)?;
-        Ok(String::new())
-    }
+    backup_or_mark_missing(
+        BackupSpec {
+            source_path: plugin_path,
+            backup_path,
+            timestamped_backup_path: None,
+            missing_marker_path: missing_marker,
+            already_active_message: "CCR is already activated. Run 'ccr deactivate' first.",
+            source_dir_context: "Failed to create Claude config directory",
+            backup_dir_context: "Failed to create backup directory",
+            read_context: "Failed to read Claude plugin config",
+            backup_context: "Failed to create Claude plugin backup",
+            timestamped_backup_context: "Failed to create timestamped Claude plugin backup",
+            missing_marker_context: "Failed to create missing plugin config marker",
+        },
+        |content| {
+            serde_json::from_str::<Value>(content)
+                .context("Claude plugin config file is invalid JSON")?;
+            Ok(())
+        },
+    )
 }
 
 fn install_claude_settings(
@@ -396,22 +279,26 @@ fn install_claude_settings(
     models_enabled: bool,
 ) -> Result<()> {
     let config = build_claude_settings(original_json, port, models, models_enabled)?;
-    let temp_path = claude_path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(&config)?)
-        .context("Failed to write temporary config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, claude_path).context("Failed to install CCR config")?;
-    Ok(())
+    atomic_write(
+        claude_path,
+        "json.tmp",
+        serde_json::to_string_pretty(&config)?,
+        "Failed to create Claude config directory",
+        "Failed to write temporary config",
+        "Failed to install CCR config",
+    )
 }
 
 fn install_claude_plugin_config(plugin_path: &std::path::Path, original_json: &str) -> Result<()> {
     let config = build_claude_plugin_config(original_json)?;
-    let temp_path = plugin_path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(&config)?)
-        .context("Failed to write temporary plugin config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, plugin_path).context("Failed to install Claude plugin config")?;
-    Ok(())
+    atomic_write(
+        plugin_path,
+        "json.tmp",
+        serde_json::to_string_pretty(&config)?,
+        "Failed to create Claude config directory",
+        "Failed to write temporary plugin config",
+        "Failed to install Claude plugin config",
+    )
 }
 
 fn restore_claude_settings(
@@ -419,24 +306,26 @@ fn restore_claude_settings(
     backup_path: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<()> {
-    if backup_path.exists() {
-        let backup_json = fs::read_to_string(backup_path).context("Failed to read backup file")?;
-        serde_json::from_str::<Value>(&backup_json)
-            .context("Backup file is corrupted (invalid JSON)")?;
-
-        let temp_path = claude_path.with_extension("json.tmp");
-        fs::copy(backup_path, &temp_path).context("Failed to copy backup to temporary file")?;
-        set_secure_permissions(&temp_path)?;
-        fs::rename(&temp_path, claude_path).context("Failed to restore Claude config")?;
-        fs::remove_file(backup_path).context("Failed to remove backup file")?;
-        fs::remove_file(missing_marker).ok();
-    } else if missing_marker.exists() {
-        fs::remove_file(claude_path).ok();
-        fs::remove_file(missing_marker).context("Failed to remove missing config marker")?;
-    } else {
-        anyhow::bail!("No backup found. CCR is not activated.");
-    }
-    Ok(())
+    restore_backup_or_remove_generated(
+        RestoreSpec {
+            target_path: claude_path,
+            backup_path,
+            missing_marker_path: missing_marker,
+            temp_extension: "json.tmp",
+            missing_backup_is_ok: false,
+            read_backup_context: "Failed to read backup file",
+            copy_context: "Failed to copy backup to temporary file",
+            rename_context: "Failed to restore Claude config",
+            remove_backup_context: "Failed to remove backup file",
+            remove_marker_context: "Failed to remove missing config marker",
+            no_backup_message: "No backup found. CCR is not activated.",
+        },
+        |backup_json| {
+            serde_json::from_str::<Value>(backup_json)
+                .context("Backup file is corrupted (invalid JSON)")?;
+            Ok(())
+        },
+    )
 }
 
 fn build_claude_settings(

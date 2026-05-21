@@ -1,6 +1,9 @@
+use super::common::{
+    BackupSpec, RestoreSpec, atomic_write, backup_or_mark_missing, ccr_config, ccr_port,
+    configured_path_from_settings, local_v1_base_url, restore_backup_or_remove_generated,
+};
 use crate::status::{InjectionSnapshot, is_process_alive, pid_file_path, read_pid};
 use anyhow::{Context, Result};
-use ccr_config::{default_config_path, load_config};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -10,6 +13,13 @@ const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
 
 /// Get Codex config file path.
 pub fn codex_config_path() -> PathBuf {
+    configured_path_from_settings(
+        |settings| settings.codex_config_path.clone(),
+        default_codex_config_path,
+    )
+}
+
+fn default_codex_config_path() -> PathBuf {
     codex_config_dir().join("config.toml")
 }
 
@@ -132,22 +142,8 @@ fn codex_config_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
     };
     model_provider == "ccr"
         && provider.get("base_url").and_then(|item| item.as_str())
-            == Some(format!("http://127.0.0.1:{port}/v1").as_str())
+            == Some(local_v1_base_url(port).as_str())
         && provider.get("wire_api").and_then(|item| item.as_str()) == Some("responses")
-}
-
-#[cfg(unix)]
-fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_secure_permissions(_path: &std::path::Path) -> Result<()> {
-    Ok(())
 }
 
 /// Activate CCR for Codex by writing a local model provider to ~/.codex/config.toml.
@@ -182,7 +178,7 @@ pub fn activate_codex_ccr() -> Result<()> {
     )?;
     prepare_codex_auth_activation_files(&auth_path, &auth_backup_path, &auth_missing_marker)?;
 
-    let ccr_config = load_config(&default_config_path()).context("Failed to load CCR config")?;
+    let ccr_config = ccr_config()?;
     let port = codex_port_from_config(&ccr_config);
     install_codex_config(&codex_path, port, &original)?;
     install_codex_auth(&auth_path)?;
@@ -216,7 +212,7 @@ pub fn deactivate_codex_ccr() -> Result<()> {
 }
 
 fn codex_port_from_config(config: &ccr_types::Config) -> u16 {
-    config.port.unwrap_or(3456)
+    ccr_port(config)
 }
 
 fn prepare_codex_activation_files(
@@ -225,29 +221,22 @@ fn prepare_codex_activation_files(
     timestamped_backup: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<String> {
-    if backup_path.exists() || missing_marker.exists() {
-        anyhow::bail!("Codex is already activated. Run 'ccr codex-deactivate' first.");
-    }
-
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create backup directory")?;
-    }
-    if let Some(parent) = codex_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create Codex config directory")?;
-    }
-
-    if codex_path.exists() {
-        let content = fs::read_to_string(codex_path).context("Failed to read Codex config")?;
-        fs::copy(codex_path, backup_path).context("Failed to create Codex backup")?;
-        set_secure_permissions(backup_path)?;
-        fs::copy(codex_path, timestamped_backup)
-            .context("Failed to create timestamped Codex backup")?;
-        set_secure_permissions(timestamped_backup)?;
-        Ok(content)
-    } else {
-        fs::write(missing_marker, b"missing").context("Failed to create missing config marker")?;
-        Ok(String::new())
-    }
+    backup_or_mark_missing(
+        BackupSpec {
+            source_path: codex_path,
+            backup_path,
+            timestamped_backup_path: Some(timestamped_backup),
+            missing_marker_path: missing_marker,
+            already_active_message: "Codex is already activated. Run 'ccr codex-deactivate' first.",
+            source_dir_context: "Failed to create Codex config directory",
+            backup_dir_context: "Failed to create backup directory",
+            read_context: "Failed to read Codex config",
+            backup_context: "Failed to create Codex backup",
+            timestamped_backup_context: "Failed to create timestamped Codex backup",
+            missing_marker_context: "Failed to create missing config marker",
+        },
+        |_| Ok(()),
+    )
 }
 
 fn prepare_codex_auth_activation_files(
@@ -255,43 +244,51 @@ fn prepare_codex_auth_activation_files(
     backup_path: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<()> {
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create backup directory")?;
-    }
-    if let Some(parent) = auth_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create Codex config directory")?;
-    }
-
-    if auth_path.exists() {
-        let content = fs::read_to_string(auth_path).context("Failed to read Codex auth")?;
-        serde_json::from_str::<serde_json::Value>(&content)
-            .context("Codex auth file is invalid JSON")?;
-        fs::copy(auth_path, backup_path).context("Failed to create Codex auth backup")?;
-        set_secure_permissions(backup_path)?;
-    } else {
-        fs::write(missing_marker, b"missing")
-            .context("Failed to create missing Codex auth marker")?;
-    }
+    backup_or_mark_missing(
+        BackupSpec {
+            source_path: auth_path,
+            backup_path,
+            timestamped_backup_path: None,
+            missing_marker_path: missing_marker,
+            already_active_message: "Codex is already activated. Run 'ccr codex-deactivate' first.",
+            source_dir_context: "Failed to create Codex config directory",
+            backup_dir_context: "Failed to create backup directory",
+            read_context: "Failed to read Codex auth",
+            backup_context: "Failed to create Codex auth backup",
+            timestamped_backup_context: "Failed to create timestamped Codex auth backup",
+            missing_marker_context: "Failed to create missing Codex auth marker",
+        },
+        |content| {
+            serde_json::from_str::<serde_json::Value>(content)
+                .context("Codex auth file is invalid JSON")?;
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
 fn install_codex_config(codex_path: &std::path::Path, port: u16, original: &str) -> Result<()> {
     let updated = build_codex_config(original, port)?;
-    let temp_path = codex_path.with_extension("toml.tmp");
-    fs::write(&temp_path, updated).context("Failed to write temporary Codex config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, codex_path).context("Failed to install Codex CCR config")?;
-    Ok(())
+    atomic_write(
+        codex_path,
+        "toml.tmp",
+        updated,
+        "Failed to create Codex config directory",
+        "Failed to write temporary Codex config",
+        "Failed to install Codex CCR config",
+    )
 }
 
 fn install_codex_auth(auth_path: &std::path::Path) -> Result<()> {
     let auth = json!({ "OPENAI_API_KEY": "any" });
-    let temp_path = auth_path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(&auth)?)
-        .context("Failed to write temporary Codex auth")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, auth_path).context("Failed to install Codex auth")?;
-    Ok(())
+    atomic_write(
+        auth_path,
+        "json.tmp",
+        serde_json::to_string_pretty(&auth)?,
+        "Failed to create Codex config directory",
+        "Failed to write temporary Codex auth",
+        "Failed to install Codex auth",
+    )
 }
 
 fn restore_codex_config(
@@ -299,24 +296,27 @@ fn restore_codex_config(
     backup_path: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<()> {
-    if backup_path.exists() {
-        let backup_toml = fs::read_to_string(backup_path).context("Failed to read backup file")?;
-        backup_toml
-            .parse::<DocumentMut>()
-            .context("Backup file is corrupted (invalid TOML)")?;
-
-        let temp_path = codex_path.with_extension("toml.tmp");
-        fs::copy(backup_path, &temp_path).context("Failed to copy backup to temporary file")?;
-        fs::rename(&temp_path, codex_path).context("Failed to restore Codex config")?;
-        fs::remove_file(backup_path).context("Failed to remove backup file")?;
-        fs::remove_file(missing_marker).ok();
-    } else if missing_marker.exists() {
-        fs::remove_file(codex_path).ok();
-        fs::remove_file(missing_marker).context("Failed to remove missing config marker")?;
-    } else {
-        anyhow::bail!("No Codex backup found. CCR is not activated for Codex.");
-    }
-    Ok(())
+    restore_backup_or_remove_generated(
+        RestoreSpec {
+            target_path: codex_path,
+            backup_path,
+            missing_marker_path: missing_marker,
+            temp_extension: "toml.tmp",
+            missing_backup_is_ok: false,
+            read_backup_context: "Failed to read backup file",
+            copy_context: "Failed to copy backup to temporary file",
+            rename_context: "Failed to restore Codex config",
+            remove_backup_context: "Failed to remove backup file",
+            remove_marker_context: "Failed to remove missing config marker",
+            no_backup_message: "No Codex backup found. CCR is not activated for Codex.",
+        },
+        |backup_toml| {
+            backup_toml
+                .parse::<DocumentMut>()
+                .context("Backup file is corrupted (invalid TOML)")?;
+            Ok(())
+        },
+    )
 }
 
 fn restore_codex_auth(
@@ -324,21 +324,26 @@ fn restore_codex_auth(
     backup_path: &std::path::Path,
     missing_marker: &std::path::Path,
 ) -> Result<()> {
-    if backup_path.exists() {
-        let backup_json = fs::read_to_string(backup_path).context("Failed to read auth backup")?;
-        serde_json::from_str::<serde_json::Value>(&backup_json)
-            .context("Auth backup file is corrupted (invalid JSON)")?;
-
-        let temp_path = auth_path.with_extension("json.tmp");
-        fs::copy(backup_path, &temp_path).context("Failed to copy auth backup")?;
-        fs::rename(&temp_path, auth_path).context("Failed to restore Codex auth")?;
-        fs::remove_file(backup_path).context("Failed to remove auth backup")?;
-        fs::remove_file(missing_marker).ok();
-    } else if missing_marker.exists() {
-        fs::remove_file(auth_path).ok();
-        fs::remove_file(missing_marker).context("Failed to remove missing auth marker")?;
-    }
-    Ok(())
+    restore_backup_or_remove_generated(
+        RestoreSpec {
+            target_path: auth_path,
+            backup_path,
+            missing_marker_path: missing_marker,
+            temp_extension: "json.tmp",
+            missing_backup_is_ok: true,
+            read_backup_context: "Failed to read auth backup",
+            copy_context: "Failed to copy auth backup",
+            rename_context: "Failed to restore Codex auth",
+            remove_backup_context: "Failed to remove auth backup",
+            remove_marker_context: "Failed to remove missing auth marker",
+            no_backup_message: "",
+        },
+        |backup_json| {
+            serde_json::from_str::<serde_json::Value>(backup_json)
+                .context("Auth backup file is corrupted (invalid JSON)")?;
+            Ok(())
+        },
+    )
 }
 
 fn build_codex_config(original: &str, port: u16) -> Result<String> {
@@ -374,7 +379,7 @@ fn build_codex_config(original: &str, port: u16) -> Result<String> {
 
     let provider = &mut doc["model_providers"]["ccr"];
     provider["name"] = value("CCR");
-    provider["base_url"] = value(format!("http://127.0.0.1:{}/v1", port));
+    provider["base_url"] = value(local_v1_base_url(port));
     provider["wire_api"] = value("responses");
     provider["requires_openai_auth"] = value(true);
 

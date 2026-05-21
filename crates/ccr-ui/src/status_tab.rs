@@ -5,16 +5,13 @@ use ccr_app_core::client_config::codex::{
     activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr,
 };
 use ccr_app_core::client_config::hermes::{
-    activate_hermes_ccr, deactivate_hermes_ccr, hermes_config_path, hermes_provider_exists,
-    hermes_provider_present,
+    activate_hermes_ccr, deactivate_hermes_ccr, hermes_snapshot,
 };
 use ccr_app_core::client_config::openclaw::{
-    activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_config_path, openclaw_provider_exists,
-    openclaw_provider_present,
+    activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_snapshot,
 };
 use ccr_app_core::client_config::opencode::{
-    activate_opencode_ccr, deactivate_opencode_ccr, opencode_config_path, opencode_provider_exists,
-    opencode_provider_present,
+    activate_opencode_ccr, deactivate_opencode_ccr, opencode_snapshot,
 };
 use ccr_app_core::settings::route_pool_config;
 use ccr_app_core::status::{
@@ -565,39 +562,6 @@ fn read_status_snapshot() -> StatusSnapshot {
         opencode: opencode_snapshot(port),
         openclaw: openclaw_snapshot(port),
         hermes: hermes_snapshot(port),
-    }
-}
-
-fn opencode_snapshot(port: u16) -> AdditiveClientSnapshot {
-    let path = opencode_config_path().display().to_string();
-    if opencode_provider_present(port) {
-        AdditiveClientSnapshot::ProviderCurrent { path }
-    } else if opencode_provider_exists() {
-        AdditiveClientSnapshot::ProviderDrifted { path }
-    } else {
-        AdditiveClientSnapshot::Missing { path }
-    }
-}
-
-fn openclaw_snapshot(port: u16) -> AdditiveClientSnapshot {
-    let path = openclaw_config_path().display().to_string();
-    if openclaw_provider_present(port) {
-        AdditiveClientSnapshot::ProviderCurrent { path }
-    } else if openclaw_provider_exists() {
-        AdditiveClientSnapshot::ProviderDrifted { path }
-    } else {
-        AdditiveClientSnapshot::Missing { path }
-    }
-}
-
-fn hermes_snapshot(port: u16) -> AdditiveClientSnapshot {
-    let path = hermes_config_path().display().to_string();
-    if hermes_provider_present(port) {
-        AdditiveClientSnapshot::ProviderCurrent { path }
-    } else if hermes_provider_exists() {
-        AdditiveClientSnapshot::ProviderDrifted { path }
-    } else {
-        AdditiveClientSnapshot::Missing { path }
     }
 }
 
