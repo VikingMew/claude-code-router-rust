@@ -1,8 +1,10 @@
 pub mod client_config;
+pub mod config_reload;
 pub mod endpoint;
 pub mod logging;
 pub mod metrics;
 pub mod platform;
 pub mod provider_kind;
+pub mod runtime_status;
 pub mod settings;
 pub mod status;
