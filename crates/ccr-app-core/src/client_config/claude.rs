@@ -130,7 +130,7 @@ fn claude_settings_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
         == Some(format!("http://127.0.0.1:{port}").as_str())
 }
 
-/// Set file permissions to 600 (owner read/write only)
+/// Set file permissions to owner read/write only.
 #[cfg(unix)]
 fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -140,9 +140,118 @@ fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn set_secure_permissions(path: &std::path::Path) -> Result<()> {
+    use anyhow::Context;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW,
+        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetTokenInformation, NO_INHERITANCE,
+        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = null_mut();
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Failed to open process token for Claude config ACL");
+    }
+
+    let result = (|| {
+        let mut token_info_len = 0;
+        let queried =
+            unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut token_info_len) };
+        if queried == 0
+            && std::io::Error::last_os_error().raw_os_error()
+                != Some(ERROR_INSUFFICIENT_BUFFER as i32)
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("Failed to size current user token information");
+        }
+
+        let mut token_info = vec![0u8; token_info_len as usize];
+        let queried = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                token_info.as_mut_ptr().cast(),
+                token_info_len,
+                &mut token_info_len,
+            )
+        };
+        if queried == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("Failed to read current user token information");
+        }
+
+        let token_user = unsafe { &*(token_info.as_ptr().cast::<TOKEN_USER>()) };
+        let user_sid = token_user.User.Sid;
+        let trustee = TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: user_sid.cast(),
+        };
+        let access = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: trustee,
+        };
+
+        let mut acl = null_mut();
+        let status = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
+        if status != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(status as i32))
+                .context("Failed to build Claude config ACL");
+        }
+
+        let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let security_info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                path_wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                security_info,
+                null_mut(),
+                null_mut(),
+                acl,
+                null(),
+            )
+        };
+
+        unsafe {
+            LocalFree(acl.cast());
+        }
+
+        if status != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(status as i32)).with_context(|| {
+                format!("Failed to set Claude config ACL for {}", path.display())
+            });
+        }
+
+        Ok(())
+    })();
+
+    unsafe {
+        CloseHandle(token);
+    }
+
+    result
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_secure_permissions(_path: &std::path::Path) -> Result<()> {
-    // TODO: Set Windows ACL
     Ok(())
 }
 
@@ -246,6 +355,7 @@ fn prepare_claude_activation_files(
         Ok(content)
     } else {
         fs::write(missing_marker, b"missing").context("Failed to create missing config marker")?;
+        set_secure_permissions(missing_marker)?;
         Ok(String::new())
     }
 }
@@ -273,6 +383,7 @@ fn prepare_claude_plugin_activation_files(
     } else {
         fs::write(missing_marker, b"missing")
             .context("Failed to create missing plugin config marker")?;
+        set_secure_permissions(missing_marker)?;
         Ok(String::new())
     }
 }
@@ -315,6 +426,7 @@ fn restore_claude_settings(
 
         let temp_path = claude_path.with_extension("json.tmp");
         fs::copy(backup_path, &temp_path).context("Failed to copy backup to temporary file")?;
+        set_secure_permissions(&temp_path)?;
         fs::rename(&temp_path, claude_path).context("Failed to restore Claude config")?;
         fs::remove_file(backup_path).context("Failed to remove backup file")?;
         fs::remove_file(missing_marker).ok();
@@ -811,5 +923,77 @@ mod tests {
 
         assert!(!settings_path.exists());
         assert!(!marker_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_secure_permissions_sets_unix_owner_read_write_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(&path, "{}").unwrap();
+
+        set_secure_permissions(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn set_secure_permissions_sets_windows_current_user_only_acl() {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{
+            EXPLICIT_ACCESS_W, GetExplicitEntriesFromAclW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+            TRUSTEE_IS_SID,
+        };
+        use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(&path, "{}").unwrap();
+
+        set_secure_permissions(&path).unwrap();
+
+        let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut dacl: *mut ACL = null_mut();
+        let mut security_descriptor = null_mut();
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                path_wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut security_descriptor,
+            )
+        };
+        assert_eq!(status, ERROR_SUCCESS);
+
+        let mut entry_count = 0;
+        let mut entries: *mut EXPLICIT_ACCESS_W = null_mut();
+        let status = unsafe { GetExplicitEntriesFromAclW(dacl, &mut entry_count, &mut entries) };
+        assert_eq!(status, ERROR_SUCCESS);
+
+        let entries_slice = unsafe { std::slice::from_raw_parts(entries, entry_count as usize) };
+        assert_eq!(entries_slice.len(), 1);
+        assert_eq!(entries_slice[0].Trustee.TrusteeForm, TRUSTEE_IS_SID);
+        assert_eq!(
+            entries_slice[0].grfAccessPermissions,
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE
+        );
+
+        unsafe {
+            LocalFree(entries.cast());
+            LocalFree(security_descriptor);
+        }
     }
 }
