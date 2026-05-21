@@ -1,3 +1,7 @@
+use ccr_app_core::config_reload::{
+    admin_reload_enabled, admin_reload_unavailable_message, reload_running_server_via_admin,
+    ConfigReloadResult,
+};
 use ccr_app_core::endpoint::{test_endpoint, EndpointStatus, EndpointTestResult};
 use ccr_app_core::logging::append_app_log;
 use ccr_app_core::provider_kind::{
@@ -7,15 +11,7 @@ use ccr_app_core::provider_kind::{
 use ccr_config::{default_config_path, save_config};
 use ccr_types::{Config, Provider, ProviderApiKind, ProviderApiKindSource};
 use eframe::egui;
-use reqwest::blocking::Client;
 use std::collections::HashMap;
-use std::time::Duration;
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ReloadResponse {
-    success: bool,
-    message: String,
-}
 
 pub struct ConfigTab {
     config: Config,
@@ -46,8 +42,18 @@ impl ConfigTab {
                     Err(e) => self.status = format!("Error: {e}"),
                 }
             }
-            if ui.button("Reload Config").clicked() {
-                self.reload_config();
+            if ui.button("Refresh From Disk").clicked() {
+                self.refresh_config_display();
+            }
+            let admin_reload_enabled = can_reload_running_server(&self.config);
+            if ui
+                .add_enabled(
+                    admin_reload_enabled,
+                    egui::Button::new("Reload Running Server"),
+                )
+                .clicked()
+            {
+                self.reload_running_server_config();
             }
             if ui
                 .add_enabled(
@@ -65,6 +71,9 @@ impl ConfigTab {
         });
         show_status_message(ui, &self.status);
         show_status_message(ui, &self.reload_status);
+        if !can_reload_running_server(&self.config) {
+            ui.label(admin_reload_unavailable_message());
+        }
 
         ui.separator();
         ui.heading("Providers");
@@ -117,48 +126,15 @@ impl ConfigTab {
         ui.add_space(8.0);
     }
 
-    fn reload_config(&mut self) {
-        self.reload_status = "Reloading...".to_string();
+    fn reload_running_server_config(&mut self) {
+        self.reload_status = "Reloading running server...".to_string();
 
-        // Call reload API
-        let client = Client::builder().timeout(Duration::from_secs(5)).build();
-
-        let client = match client {
-            Ok(c) => c,
-            Err(e) => {
-                self.reload_status = format!("❌ Client error: {}", e);
-                return;
-            }
-        };
-
-        let response = client.post("http://127.0.0.1:3456/api/admin/reload").send();
-
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    // Parse response
-                    match resp.json::<ReloadResponse>() {
-                        Ok(reload_resp) => {
-                            if reload_resp.success {
-                                self.reload_status = "✅ Config reloaded successfully".to_string();
-                                // Refresh config display
-                                self.refresh_config_display();
-                            } else {
-                                self.reload_status =
-                                    format!("❌ Reload failed: {}", reload_resp.message);
-                            }
-                        }
-                        Err(e) => {
-                            self.reload_status = format!("❌ Parse error: {}", e);
-                        }
-                    }
-                } else {
-                    self.reload_status = format!("❌ HTTP {}", resp.status());
-                }
-            }
-            Err(e) => {
-                self.reload_status = format!("❌ Request failed: {}", e);
-            }
+        let port = self.config.port.unwrap_or(3456);
+        let result = reload_running_server_via_admin(port, self.config.api_key.as_deref());
+        let reload_succeeded = matches!(result, ConfigReloadResult::Success(_));
+        self.reload_status = result.ui_message();
+        if reload_succeeded {
+            self.refresh_config_display();
         }
     }
 
@@ -167,10 +143,10 @@ impl ConfigTab {
         match ccr_config::load_config(&default_config_path()) {
             Ok(config) => {
                 self.config = config;
-                self.status = "Config refreshed from disk".to_string();
+                self.status = "✓ Config refreshed from disk".to_string();
             }
             Err(e) => {
-                self.status = format!("Warning: Could not refresh display: {}", e);
+                self.status = format!("✗ Could not refresh display: {}", e);
             }
         }
     }
@@ -212,6 +188,10 @@ impl ConfigTab {
 
 fn provider_test_key(provider: &Provider) -> String {
     format!("{}|{}", provider.name, provider.api_base_url)
+}
+
+fn can_reload_running_server(config: &Config) -> bool {
+    admin_reload_enabled(config)
 }
 
 fn show_provider_test_result(
@@ -304,12 +284,36 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ccr_types::AppSettings;
+
+    #[test]
+    fn running_server_reload_is_disabled_by_default() {
+        assert!(!can_reload_running_server(&Config::default()));
+    }
+
+    #[test]
+    fn running_server_reload_requires_explicit_admin_api_enablement() {
+        let config = Config {
+            app_settings: AppSettings {
+                admin_api_enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(can_reload_running_server(&config));
+    }
+}
+
 fn show_status_message(ui: &mut egui::Ui, message: &str) {
     if message.is_empty() {
         return;
     }
 
-    if message.starts_with("Error") || message.contains("❌") {
+    if message.starts_with("Error") || message.starts_with("✗") || message.contains("❌") {
         ui.colored_label(egui::Color32::RED, message);
     } else if message.starts_with("Warning") {
         ui.colored_label(egui::Color32::YELLOW, message);
