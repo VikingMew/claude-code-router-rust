@@ -130,16 +130,13 @@ pub struct BackupInfo {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn test_create_backup() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let backup_dir = temp_dir.path().join("backups");
         unsafe { std::env::set_var("CCR_BACKUP_DIR", &backup_dir) };
@@ -161,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_cleanup_old_backups() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::ENV_LOCK.lock().unwrap();
         // Create multiple backups
         let temp_dir = TempDir::new().unwrap();
         let backup_dir = temp_dir.path().join("backups");

@@ -1,49 +1,54 @@
-use ccr_app_core::client_config::claude::{
-    activate_ccr, claude_injection_snapshot, deactivate_ccr,
-};
-use ccr_app_core::client_config::codex::{
-    activate_codex_ccr, codex_injection_snapshot, deactivate_codex_ccr,
-};
-use ccr_app_core::client_config::hermes::{
-    activate_hermes_ccr, deactivate_hermes_ccr, hermes_snapshot,
-};
-use ccr_app_core::client_config::openclaw::{
-    activate_openclaw_ccr, deactivate_openclaw_ccr, openclaw_snapshot,
-};
-use ccr_app_core::client_config::opencode::{
-    activate_opencode_ccr, deactivate_opencode_ccr, opencode_snapshot,
-};
-use ccr_app_core::settings::route_pool_config;
+use ccr_app_core::client_config::claude::{activate_ccr, deactivate_ccr};
+use ccr_app_core::client_config::codex::{activate_codex_ccr, deactivate_codex_ccr};
+use ccr_app_core::client_config::hermes::{activate_hermes_ccr, deactivate_hermes_ccr};
+use ccr_app_core::client_config::openclaw::{activate_openclaw_ccr, deactivate_openclaw_ccr};
+use ccr_app_core::client_config::opencode::{activate_opencode_ccr, deactivate_opencode_ccr};
 use ccr_app_core::status::{
-    ccr_server_executable_from, check_health,
-    read_server_snapshot as read_server_snapshot_from_core, start_server, stop_server,
-    AdditiveClientSnapshot, InjectionSnapshot, ServerSnapshot,
+    ccr_server_executable_from, check_health, fetch_runtime_status_snapshot, read_status_snapshot,
+    start_server, stop_server, AdditiveClientSnapshot, InjectionSnapshot, RoutePoolConfigSnapshot,
+    RuntimeStatusSnapshot, ServerSnapshot, StatusSnapshot,
 };
 use ccr_app_core::{
     metrics::{RouteMetricSummary, TtftMetricSummary},
-    runtime_status::{
-        fetch_route_pool_status, fetch_runtime_metrics_summary, fetch_ttft_metrics_summary,
-        RoutePoolStatusResponse,
-    },
+    runtime_status::RoutePoolStatusResponse,
 };
-use ccr_config::{default_config_path, load_config};
 use eframe::egui;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const ROUTE_POOL_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct StatusSnapshot {
-    server: ServerSnapshot,
-    claude: InjectionSnapshot,
-    codex: InjectionSnapshot,
-    opencode: AdditiveClientSnapshot,
-    openclaw: AdditiveClientSnapshot,
-    hermes: AdditiveClientSnapshot,
+enum OperationTarget {
+    Server,
+    Claude,
+    Codex,
+    OpenCode,
+    OpenClaw,
+    Hermes,
+}
+
+#[derive(Debug, Clone)]
+enum StatusTaskResult {
+    Snapshot {
+        snapshot: StatusSnapshot,
+        health_status: Option<String>,
+    },
+    Runtime(RuntimeStatusSnapshot),
+    Health(String),
+    Operation {
+        target: OperationTarget,
+        message: String,
+        snapshot: StatusSnapshot,
+    },
 }
 
 pub struct StatusTab {
-    snapshot: StatusSnapshot,
+    snapshot: Option<StatusSnapshot>,
+    snapshot_refreshing: bool,
+    task_tx: Sender<StatusTaskResult>,
+    task_rx: Receiver<StatusTaskResult>,
     health_status: String,
     health_checking: bool,
     claude_activation_status: String,
@@ -62,12 +67,18 @@ pub struct StatusTab {
     runtime_metrics_summary: Option<Result<Vec<RouteMetricSummary>, String>>,
     ttft_metrics_summary: Option<Result<Vec<TtftMetricSummary>, String>>,
     route_pool_last_refresh: Option<Instant>,
+    route_pool_refreshing: bool,
+    status_last_refresh: Option<Instant>,
 }
 
 impl StatusTab {
     pub fn new() -> Self {
+        let (task_tx, task_rx) = mpsc::channel();
         let mut tab = Self {
-            snapshot: read_status_snapshot(),
+            snapshot: None,
+            snapshot_refreshing: false,
+            task_tx,
+            task_rx,
             health_status: String::new(),
             health_checking: false,
             claude_activation_status: String::new(),
@@ -86,45 +97,106 @@ impl StatusTab {
             runtime_metrics_summary: None,
             ttft_metrics_summary: None,
             route_pool_last_refresh: None,
+            route_pool_refreshing: false,
+            status_last_refresh: None,
         };
         tab.refresh_snapshot();
         tab
     }
 
     pub fn start_server_on_launch(&mut self) {
-        let config = load_config(&default_config_path()).unwrap_or_default();
-        if !config.app_settings.server_auto_start {
+        if self.server_operation_checking {
             return;
         }
-        self.refresh_snapshot();
-        if matches!(self.snapshot.server, ServerSnapshot::Running { .. }) {
-            return;
-        }
-
-        self.start_server();
+        self.server_operation_checking = true;
+        let exe_path = ccr_server_executable();
+        self.spawn_task(move || {
+            let snapshot = read_status_snapshot();
+            let message = if !snapshot.server_auto_start {
+                String::new()
+            } else if matches!(snapshot.server, ServerSnapshot::Running { .. }) {
+                String::new()
+            } else {
+                match exe_path {
+                    Some(exe_path) => match start_server(&exe_path) {
+                        Ok(operation) => operation.ui_message(),
+                        Err(e) => format!("✗ Failed to start server: {}", e),
+                    },
+                    None => "✗ Cannot find ccr-server executable".to_string(),
+                }
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Server,
+                message,
+                snapshot: read_status_snapshot(),
+            }
+        });
     }
 
     fn refresh_snapshot(&mut self) {
-        self.snapshot = read_status_snapshot();
+        if self.snapshot_refreshing {
+            return;
+        }
+        self.snapshot_refreshing = true;
+        self.spawn_task(|| StatusTaskResult::Snapshot {
+            snapshot: read_status_snapshot(),
+            health_status: None,
+        });
     }
 
     fn refresh_status(&mut self) {
-        self.refresh_snapshot();
+        if self.snapshot_refreshing {
+            return;
+        }
+        self.snapshot_refreshing = true;
         self.route_pool_last_refresh = None;
-        let port = self.snapshot.server.port();
-        self.check_health(port);
-        self.refresh_snapshot();
+        self.spawn_task(|| {
+            let snapshot = read_status_snapshot();
+            let health_status = snapshot
+                .server
+                .is_running()
+                .then(|| check_health(snapshot.server.port()).ui_message());
+            StatusTaskResult::Snapshot {
+                snapshot,
+                health_status,
+            }
+        });
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        self.refresh_snapshot();
+        self.poll_task_results(ui.ctx());
 
         ui.horizontal(|ui| {
             ui.heading("Status");
-            if ui.button("Refresh Status").clicked() {
+            if ui
+                .add_enabled(
+                    !self.snapshot_refreshing,
+                    egui::Button::new("Refresh Status"),
+                )
+                .clicked()
+            {
                 self.refresh_status();
             }
         });
+
+        if self.snapshot_refreshing {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Refreshing status...");
+            });
+        } else if let Some(last_refresh) = self.status_last_refresh {
+            ui.label(format!(
+                "Last status refresh: {:.0}s ago",
+                last_refresh.elapsed().as_secs()
+            ));
+        }
+
+        if self.snapshot.is_none() {
+            ui.add_space(8.0);
+            ui.label("Status snapshot is loading.");
+            self.request_repaint_if_busy(ui.ctx());
+            return;
+        }
 
         ui.add_space(8.0);
         self.show_server(ui);
@@ -153,12 +225,110 @@ impl StatusTab {
         ui.separator();
         ui.add_space(8.0);
         self.show_hermes(ui);
+        self.request_repaint_if_busy(ui.ctx());
+    }
+
+    fn snapshot(&self) -> &StatusSnapshot {
+        self.snapshot
+            .as_ref()
+            .expect("status snapshot checked before rendering sections")
+    }
+
+    fn spawn_task<F>(&self, task: F)
+    where
+        F: FnOnce() -> StatusTaskResult + Send + 'static,
+    {
+        let tx = self.task_tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(task());
+        });
+    }
+
+    fn poll_task_results(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.task_rx.try_recv() {
+            match result {
+                StatusTaskResult::Snapshot {
+                    snapshot,
+                    health_status,
+                } => {
+                    self.snapshot = Some(snapshot);
+                    self.snapshot_refreshing = false;
+                    self.status_last_refresh = Some(Instant::now());
+                    if let Some(health_status) = health_status {
+                        self.health_status = health_status;
+                        self.health_checking = false;
+                    }
+                }
+                StatusTaskResult::Runtime(snapshot) => {
+                    self.route_pool_status = Some(snapshot.route_pool_status);
+                    self.runtime_metrics_summary = Some(snapshot.runtime_metrics_summary);
+                    self.ttft_metrics_summary = Some(snapshot.ttft_metrics_summary);
+                    self.route_pool_refreshing = false;
+                }
+                StatusTaskResult::Health(message) => {
+                    self.health_status = message;
+                    self.health_checking = false;
+                }
+                StatusTaskResult::Operation {
+                    target,
+                    message,
+                    snapshot,
+                } => {
+                    self.snapshot = Some(snapshot);
+                    self.status_last_refresh = Some(Instant::now());
+                    match target {
+                        OperationTarget::Server => {
+                            self.server_operation_status = message;
+                            self.server_operation_checking = false;
+                            self.route_pool_last_refresh = None;
+                        }
+                        OperationTarget::Claude => {
+                            self.claude_activation_status = message;
+                            self.claude_activation_checking = false;
+                        }
+                        OperationTarget::Codex => {
+                            self.codex_activation_status = message;
+                            self.codex_activation_checking = false;
+                        }
+                        OperationTarget::OpenCode => {
+                            self.opencode_status = message;
+                            self.opencode_checking = false;
+                        }
+                        OperationTarget::OpenClaw => {
+                            self.openclaw_status = message;
+                            self.openclaw_checking = false;
+                        }
+                        OperationTarget::Hermes => {
+                            self.hermes_status = message;
+                            self.hermes_checking = false;
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    fn request_repaint_if_busy(&self, ctx: &egui::Context) {
+        if self.snapshot_refreshing
+            || self.health_checking
+            || self.claude_activation_checking
+            || self.codex_activation_checking
+            || self.opencode_checking
+            || self.openclaw_checking
+            || self.hermes_checking
+            || self.server_operation_checking
+            || self.route_pool_refreshing
+        {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 
     fn show_server(&mut self, ui: &mut egui::Ui) {
         ui.heading("Server");
 
-        match &self.snapshot.server {
+        let server = self.snapshot().server.clone();
+        match &server {
             ServerSnapshot::Running { pid, port } => {
                 ui.label(format!("Process: Running (PID {})", pid));
                 ui.label(format!("Address: http://127.0.0.1:{}", port));
@@ -174,7 +344,7 @@ impl StatusTab {
             }
         }
 
-        if self.snapshot.server.is_running() {
+        if server.is_running() {
             if self.health_status.is_empty() {
                 ui.label("HTTP Health: Not checked");
             } else {
@@ -186,7 +356,8 @@ impl StatusTab {
 
         ui.add_space(4.0);
 
-        let server_running = self.snapshot.server.is_running();
+        let server_running = server.is_running();
+        let port = server.port();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -215,7 +386,7 @@ impl StatusTab {
                 )
                 .clicked()
             {
-                self.check_health(self.snapshot.server.port());
+                self.check_health(port);
             }
         });
 
@@ -233,50 +404,42 @@ impl StatusTab {
 
     fn show_routing(&mut self, ui: &mut egui::Ui) {
         ui.heading("Routing");
-        let config = load_config(&default_config_path()).unwrap_or_default();
 
-        match route_pool_config(&config) {
-            Some(pool)
-                if pool.enabled && pool.candidates.iter().any(|candidate| candidate.enabled) =>
-            {
-                let enabled = pool
-                    .candidates
-                    .iter()
-                    .filter(|candidate| candidate.enabled)
-                    .count();
+        match self.snapshot().route_pool.clone() {
+            RoutePoolConfigSnapshot::Enabled {
+                active_routes,
+                failure_threshold,
+                ban_seconds,
+            } => {
                 ui.label(format!(
-                    "Route Pool: Enabled ({enabled} active routes, {} failures, {}s ban)",
-                    pool.failure_threshold.max(1),
-                    pool.ban_seconds.max(1)
+                    "Route Pool: Enabled ({active_routes} active routes, {failure_threshold} failures, {ban_seconds}s ban)"
                 ));
             }
-            Some(pool) => {
-                let configured = pool.candidates.len();
-                let enabled = pool
-                    .candidates
-                    .iter()
-                    .filter(|candidate| candidate.enabled)
-                    .count();
-                if pool.enabled {
-                    ui.colored_label(
-                        egui::Color32::YELLOW,
-                        format!("Route Pool: Enabled but empty ({configured} configured, {enabled} active)"),
-                    );
-                } else {
-                    ui.label(format!(
-                        "Route Pool: Disabled ({configured} configured routes)"
-                    ));
-                }
-                if pool.enabled {
-                    ui.label("Runtime: Not applicable until Route Pool has active routes");
-                } else {
-                    ui.label("Runtime: Not applicable while Route Pool is disabled");
-                }
+            RoutePoolConfigSnapshot::EnabledEmpty {
+                configured_routes,
+                active_routes,
+            } => {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    format!(
+                        "Route Pool: Enabled but empty ({configured_routes} configured, {active_routes} active)"
+                    ),
+                );
+                ui.label("Runtime: Not applicable until Route Pool has active routes");
                 self.route_pool_status = None;
                 self.route_pool_last_refresh = None;
                 return;
             }
-            None => {
+            RoutePoolConfigSnapshot::Disabled { configured_routes } => {
+                ui.label(format!(
+                    "Route Pool: Disabled ({configured_routes} configured routes)"
+                ));
+                ui.label("Runtime: Not applicable while Route Pool is disabled");
+                self.route_pool_status = None;
+                self.route_pool_last_refresh = None;
+                return;
+            }
+            RoutePoolConfigSnapshot::NotConfigured => {
                 ui.label("Route Pool: Not configured");
                 ui.label("Runtime: Not applicable");
                 self.route_pool_status = None;
@@ -285,8 +448,16 @@ impl StatusTab {
             }
         }
 
-        if self.snapshot.server.is_running() {
-            self.refresh_route_pool_status_if_due(config.api_key.as_deref());
+        let server = self.snapshot().server.clone();
+        if server.is_running() {
+            let api_key = self.snapshot().api_key.clone();
+            self.refresh_route_pool_status_if_due(server.port(), api_key.as_deref());
+            if self.route_pool_refreshing {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Refreshing route runtime...");
+                });
+            }
             match &self.route_pool_status {
                 Some(Ok(status)) => show_route_pool_runtime(ui, status),
                 Some(Err(error)) => {
@@ -296,7 +467,7 @@ impl StatusTab {
                     );
                 }
                 None => {
-                    ui.label("Route Pool runtime: Not loaded yet.");
+                    ui.label("Route Pool runtime: Loading.");
                 }
             }
             match &self.runtime_metrics_summary {
@@ -308,7 +479,7 @@ impl StatusTab {
                     );
                 }
                 None => {
-                    ui.label("Real traffic metrics: Not loaded yet.");
+                    ui.label("Real traffic metrics: Loading.");
                 }
             }
             match &self.ttft_metrics_summary {
@@ -320,7 +491,7 @@ impl StatusTab {
                     );
                 }
                 None => {
-                    ui.label("TTFT metrics from real client traffic: Not loaded yet.");
+                    ui.label("TTFT metrics from real client traffic: Loading.");
                 }
             }
         } else {
@@ -332,33 +503,34 @@ impl StatusTab {
         }
     }
 
-    fn refresh_route_pool_status_if_due(&mut self, api_key: Option<&str>) {
+    fn refresh_route_pool_status_if_due(&mut self, port: u16, api_key: Option<&str>) {
         let now = Instant::now();
         let should_refresh = self
             .route_pool_last_refresh
             .map(|last| now.duration_since(last) >= ROUTE_POOL_STATUS_REFRESH_INTERVAL)
             .unwrap_or(true);
-        if !should_refresh {
+        if !should_refresh || self.route_pool_refreshing {
             return;
         }
 
-        let port = self.snapshot.server.port();
-        let api_key = normalized_api_key(api_key);
-        self.route_pool_status = Some(fetch_route_pool_status(port, api_key));
-        self.runtime_metrics_summary = Some(fetch_runtime_metrics_summary(port, api_key));
-        self.ttft_metrics_summary = Some(fetch_ttft_metrics_summary(port, api_key));
+        let api_key = normalized_api_key(api_key).map(str::to_string);
+        self.route_pool_refreshing = true;
         self.route_pool_last_refresh = Some(now);
+        self.spawn_task(move || {
+            StatusTaskResult::Runtime(fetch_runtime_status_snapshot(port, api_key.as_deref()))
+        });
     }
 
     fn show_claude(&mut self, ui: &mut egui::Ui) {
         ui.heading("Claude Config Switch");
 
-        show_injection_snapshot(ui, &self.snapshot.claude);
+        let snapshot = self.snapshot().clone();
+        show_injection_snapshot(ui, &snapshot.claude);
 
         ui.add_space(4.0);
 
-        let server_running = self.snapshot.server.is_running();
-        let activated = self.snapshot.claude.is_activated();
+        let server_running = snapshot.server.is_running();
+        let activated = snapshot.claude.is_activated();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -395,12 +567,13 @@ impl StatusTab {
     fn show_codex(&mut self, ui: &mut egui::Ui) {
         ui.heading("Codex Config Switch");
 
-        show_injection_snapshot(ui, &self.snapshot.codex);
+        let snapshot = self.snapshot().clone();
+        show_injection_snapshot(ui, &snapshot.codex);
 
         ui.add_space(4.0);
 
-        let server_running = self.snapshot.server.is_running();
-        let activated = self.snapshot.codex.is_activated();
+        let server_running = snapshot.server.is_running();
+        let activated = snapshot.codex.is_activated();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -436,11 +609,12 @@ impl StatusTab {
 
     fn show_opencode(&mut self, ui: &mut egui::Ui) {
         ui.heading("OpenCode Config");
-        show_additive_client_snapshot(ui, &self.snapshot.opencode);
+        let snapshot = self.snapshot().clone();
+        show_additive_client_snapshot(ui, &snapshot.opencode);
 
-        let server_running = self.snapshot.server.is_running();
-        let provider_present = self.snapshot.opencode.provider_present();
-        let current = self.snapshot.opencode.is_current();
+        let server_running = snapshot.server.is_running();
+        let provider_present = snapshot.opencode.provider_present();
+        let current = snapshot.opencode.is_current();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -473,11 +647,12 @@ impl StatusTab {
 
     fn show_openclaw(&mut self, ui: &mut egui::Ui) {
         ui.heading("OpenClaw Config");
-        show_additive_client_snapshot(ui, &self.snapshot.openclaw);
+        let snapshot = self.snapshot().clone();
+        show_additive_client_snapshot(ui, &snapshot.openclaw);
 
-        let server_running = self.snapshot.server.is_running();
-        let provider_present = self.snapshot.openclaw.provider_present();
-        let current = self.snapshot.openclaw.is_current();
+        let server_running = snapshot.server.is_running();
+        let provider_present = snapshot.openclaw.provider_present();
+        let current = snapshot.openclaw.is_current();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -510,11 +685,12 @@ impl StatusTab {
 
     fn show_hermes(&mut self, ui: &mut egui::Ui) {
         ui.heading("Hermes Config");
-        show_additive_client_snapshot(ui, &self.snapshot.hermes);
+        let snapshot = self.snapshot().clone();
+        show_additive_client_snapshot(ui, &snapshot.hermes);
 
-        let server_running = self.snapshot.server.is_running();
-        let provider_present = self.snapshot.hermes.provider_present();
-        let current = self.snapshot.hermes.is_current();
+        let server_running = snapshot.server.is_running();
+        let provider_present = snapshot.hermes.provider_present();
+        let current = snapshot.hermes.is_current();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -550,27 +726,6 @@ impl Default for StatusTab {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn read_status_snapshot() -> StatusSnapshot {
-    let server = read_server_snapshot();
-    let port = server.port();
-    StatusSnapshot {
-        server,
-        claude: claude_injection_snapshot(port),
-        codex: codex_injection_snapshot(port),
-        opencode: opencode_snapshot(port),
-        openclaw: openclaw_snapshot(port),
-        hermes: hermes_snapshot(port),
-    }
-}
-
-fn read_server_snapshot() -> ServerSnapshot {
-    let port = load_config(&default_config_path())
-        .ok()
-        .and_then(|c| c.port)
-        .unwrap_or(3456);
-    read_server_snapshot_from_core(port)
 }
 
 fn show_injection_snapshot(ui: &mut egui::Ui, snapshot: &InjectionSnapshot) {
@@ -750,219 +905,246 @@ fn show_ttft_metrics_summary(ui: &mut egui::Ui, summary: &[TtftMetricSummary]) {
 
 impl StatusTab {
     fn check_health(&mut self, port: u16) {
+        if self.health_checking {
+            return;
+        }
         self.health_checking = true;
         self.health_status.clear();
-        self.health_status = check_health(port).ui_message();
-        self.health_checking = false;
+        self.spawn_task(move || StatusTaskResult::Health(check_health(port).ui_message()));
     }
 
     fn activate_claude_config(&mut self) {
+        if self.claude_activation_checking {
+            return;
+        }
         self.claude_activation_checking = true;
         self.claude_activation_status.clear();
-
-        match activate_ccr() {
-            Ok(_) => {
-                self.claude_activation_status =
-                    "✓ Activated! Claude Code is now using CCR router".to_string();
+        self.spawn_task(|| {
+            let message = match activate_ccr() {
+                Ok(_) => "✓ Activated! Claude Code is now using CCR router".to_string(),
+                Err(e) => format!("✗ Activation failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Claude,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.claude_activation_status = format!("✗ Activation failed: {}", e);
-            }
-        }
-
-        self.claude_activation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn deactivate_claude_config(&mut self) {
+        if self.claude_activation_checking {
+            return;
+        }
         self.claude_activation_checking = true;
         self.claude_activation_status.clear();
-
-        match deactivate_ccr() {
-            Ok(_) => {
-                self.claude_activation_status =
-                    "✓ Deactivated! Claude Code is now using original configuration".to_string();
+        self.spawn_task(|| {
+            let message = match deactivate_ccr() {
+                Ok(_) => {
+                    "✓ Deactivated! Claude Code is now using original configuration".to_string()
+                }
+                Err(e) => format!("✗ Deactivation failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Claude,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.claude_activation_status = format!("✗ Deactivation failed: {}", e);
-            }
-        }
-
-        self.claude_activation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn activate_codex_config(&mut self) {
+        if self.codex_activation_checking {
+            return;
+        }
         self.codex_activation_checking = true;
         self.codex_activation_status.clear();
-
-        match activate_codex_ccr() {
-            Ok(_) => {
-                self.codex_activation_status =
-                    "✓ Activated! Codex is now using CCR router".to_string();
+        self.spawn_task(|| {
+            let message = match activate_codex_ccr() {
+                Ok(_) => "✓ Activated! Codex is now using CCR router".to_string(),
+                Err(e) => format!("✗ Activation failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Codex,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.codex_activation_status = format!("✗ Activation failed: {}", e);
-            }
-        }
-
-        self.codex_activation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn deactivate_codex_config(&mut self) {
+        if self.codex_activation_checking {
+            return;
+        }
         self.codex_activation_checking = true;
         self.codex_activation_status.clear();
-
-        match deactivate_codex_ccr() {
-            Ok(_) => {
-                self.codex_activation_status =
-                    "✓ Deactivated! Codex is now using original configuration".to_string();
+        self.spawn_task(|| {
+            let message = match deactivate_codex_ccr() {
+                Ok(_) => "✓ Deactivated! Codex is now using original configuration".to_string(),
+                Err(e) => format!("✗ Deactivation failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Codex,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.codex_activation_status = format!("✗ Deactivation failed: {}", e);
-            }
-        }
-
-        self.codex_activation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn activate_opencode_config(&mut self) {
+        if self.opencode_checking {
+            return;
+        }
         self.opencode_checking = true;
         self.opencode_status.clear();
-
-        match activate_opencode_ccr() {
-            Ok(_) => {
-                self.opencode_status = "✓ Added CCR provider to OpenCode config".to_string();
+        self.spawn_task(|| {
+            let message = match activate_opencode_ccr() {
+                Ok(_) => "✓ Added CCR provider to OpenCode config".to_string(),
+                Err(e) => format!("✗ OpenCode update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::OpenCode,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.opencode_status = format!("✗ OpenCode update failed: {}", e);
-            }
-        }
-
-        self.opencode_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn deactivate_opencode_config(&mut self) {
+        if self.opencode_checking {
+            return;
+        }
         self.opencode_checking = true;
         self.opencode_status.clear();
-
-        match deactivate_opencode_ccr() {
-            Ok(_) => {
-                self.opencode_status = "✓ Removed CCR provider from OpenCode config".to_string();
+        self.spawn_task(|| {
+            let message = match deactivate_opencode_ccr() {
+                Ok(_) => "✓ Removed CCR provider from OpenCode config".to_string(),
+                Err(e) => format!("✗ OpenCode update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::OpenCode,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.opencode_status = format!("✗ OpenCode update failed: {}", e);
-            }
-        }
-
-        self.opencode_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn activate_openclaw_config(&mut self) {
+        if self.openclaw_checking {
+            return;
+        }
         self.openclaw_checking = true;
         self.openclaw_status.clear();
-
-        match activate_openclaw_ccr() {
-            Ok(_) => {
-                self.openclaw_status = "✓ Added CCR provider to OpenClaw config".to_string();
+        self.spawn_task(|| {
+            let message = match activate_openclaw_ccr() {
+                Ok(_) => "✓ Added CCR provider to OpenClaw config".to_string(),
+                Err(e) => format!("✗ OpenClaw update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::OpenClaw,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.openclaw_status = format!("✗ OpenClaw update failed: {}", e);
-            }
-        }
-
-        self.openclaw_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn deactivate_openclaw_config(&mut self) {
+        if self.openclaw_checking {
+            return;
+        }
         self.openclaw_checking = true;
         self.openclaw_status.clear();
-
-        match deactivate_openclaw_ccr() {
-            Ok(_) => {
-                self.openclaw_status = "✓ Removed CCR provider from OpenClaw config".to_string();
+        self.spawn_task(|| {
+            let message = match deactivate_openclaw_ccr() {
+                Ok(_) => "✓ Removed CCR provider from OpenClaw config".to_string(),
+                Err(e) => format!("✗ OpenClaw update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::OpenClaw,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.openclaw_status = format!("✗ OpenClaw update failed: {}", e);
-            }
-        }
-
-        self.openclaw_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn activate_hermes_config(&mut self) {
+        if self.hermes_checking {
+            return;
+        }
         self.hermes_checking = true;
         self.hermes_status.clear();
-
-        match activate_hermes_ccr() {
-            Ok(_) => {
-                self.hermes_status = "✓ Added CCR provider to Hermes config".to_string();
+        self.spawn_task(|| {
+            let message = match activate_hermes_ccr() {
+                Ok(_) => "✓ Added CCR provider to Hermes config".to_string(),
+                Err(e) => format!("✗ Hermes update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Hermes,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.hermes_status = format!("✗ Hermes update failed: {}", e);
-            }
-        }
-
-        self.hermes_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn deactivate_hermes_config(&mut self) {
+        if self.hermes_checking {
+            return;
+        }
         self.hermes_checking = true;
         self.hermes_status.clear();
-
-        match deactivate_hermes_ccr() {
-            Ok(_) => {
-                self.hermes_status = "✓ Removed CCR provider from Hermes config".to_string();
+        self.spawn_task(|| {
+            let message = match deactivate_hermes_ccr() {
+                Ok(_) => "✓ Removed CCR provider from Hermes config".to_string(),
+                Err(e) => format!("✗ Hermes update failed: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Hermes,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.hermes_status = format!("✗ Hermes update failed: {}", e);
-            }
-        }
-
-        self.hermes_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn start_server(&mut self) {
+        if self.server_operation_checking {
+            return;
+        }
         self.server_operation_checking = true;
         self.server_operation_status.clear();
-
-        match ccr_server_executable() {
-            Some(exe_path) => match start_server(&exe_path) {
-                Ok(operation) => self.server_operation_status = operation.ui_message(),
-                Err(e) => self.server_operation_status = format!("✗ Failed to start server: {}", e),
-            },
-            None => {
-                self.server_operation_status = "✗ Cannot find ccr-server executable".to_string();
+        let exe_path = ccr_server_executable();
+        self.spawn_task(move || {
+            let message = match exe_path {
+                Some(exe_path) => match start_server(&exe_path) {
+                    Ok(operation) => operation.ui_message(),
+                    Err(e) => format!("✗ Failed to start server: {}", e),
+                },
+                None => "✗ Cannot find ccr-server executable".to_string(),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Server,
+                message,
+                snapshot: read_status_snapshot(),
             }
-        }
-
-        self.server_operation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 
     fn stop_server(&mut self) {
+        if self.server_operation_checking {
+            return;
+        }
         self.server_operation_checking = true;
         self.server_operation_status.clear();
-
-        match stop_server() {
-            Ok(operation) => {
-                self.server_operation_status = operation.ui_message();
+        self.spawn_task(|| {
+            let message = match stop_server() {
+                Ok(operation) => operation.ui_message(),
+                Err(e) => format!("✗ Failed to stop server: {}", e),
+            };
+            StatusTaskResult::Operation {
+                target: OperationTarget::Server,
+                message,
+                snapshot: read_status_snapshot(),
             }
-            Err(e) => {
-                self.server_operation_status = format!("✗ Failed to stop server: {}", e);
-            }
-        }
-
-        self.server_operation_checking = false;
-        self.refresh_snapshot();
+        });
     }
 }
 

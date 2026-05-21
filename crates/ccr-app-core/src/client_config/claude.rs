@@ -2,36 +2,80 @@
 use super::common::set_secure_permissions;
 use super::common::{
     BackupSpec, RestoreSpec, atomic_write, backup_or_mark_missing, ccr_config, ccr_port,
-    configured_path_from_settings, restore_backup_or_remove_generated,
+    restore_backup_or_remove_generated,
 };
 use crate::status::{InjectionSnapshot, is_process_alive, pid_file_path, read_pid};
 use anyhow::{Context, Result};
-use ccr_types::ClaudeCodeModelSettings;
+use ccr_types::{AppSettings, ClaudeCodeModelSettings};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
 /// Get Claude Code settings file path.
 pub fn claude_config_path() -> PathBuf {
-    configured_path_from_settings(
-        |settings| settings.claude_config_path.clone(),
-        default_claude_config_path,
-    )
-}
-
-fn default_claude_config_path() -> PathBuf {
-    dirs_next::home_dir()
-        .expect("Cannot determine home directory")
-        .join(".claude")
-        .join("settings.json")
+    configured_claude_paths()
+        .map(|paths| paths.settings_path)
+        .unwrap_or_else(default_claude_config_path)
 }
 
 /// Get Claude Code plugin config file path.
 pub fn claude_plugin_config_path() -> PathBuf {
+    configured_claude_paths()
+        .map(|paths| paths.plugin_config_path)
+        .unwrap_or_else(default_claude_plugin_config_path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeConfigPaths {
+    settings_path: PathBuf,
+    plugin_config_path: PathBuf,
+}
+
+fn claude_config_paths_from_settings(settings: &AppSettings) -> ClaudeConfigPaths {
+    settings
+        .claude_config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .map(|settings_path| {
+            let plugin_config_path = settings_path
+                .parent()
+                .map(|parent| parent.join("config.json"))
+                .unwrap_or_else(default_claude_plugin_config_path);
+            ClaudeConfigPaths {
+                settings_path,
+                plugin_config_path,
+            }
+        })
+        .unwrap_or_else(default_claude_config_paths)
+}
+
+fn configured_claude_paths() -> Option<ClaudeConfigPaths> {
+    ccr_config()
+        .ok()
+        .map(|config| claude_config_paths_from_settings(&config.app_settings))
+}
+
+fn default_claude_config_paths() -> ClaudeConfigPaths {
+    ClaudeConfigPaths {
+        settings_path: default_claude_config_path(),
+        plugin_config_path: default_claude_plugin_config_path(),
+    }
+}
+
+fn default_claude_config_path() -> PathBuf {
+    default_claude_config_dir().join("settings.json")
+}
+
+fn default_claude_plugin_config_path() -> PathBuf {
+    default_claude_config_dir().join("config.json")
+}
+
+fn default_claude_config_dir() -> PathBuf {
     dirs_next::home_dir()
         .expect("Cannot determine home directory")
         .join(".claude")
-        .join("config.json")
 }
 
 /// Get CCR backup directory
@@ -103,8 +147,23 @@ pub fn check_activation_status() -> ActivationStatus {
 }
 
 pub fn claude_injection_snapshot(port: u16) -> InjectionSnapshot {
-    let current = claude_points_to_ccr(port);
-    match check_activation_status() {
+    let paths = configured_claude_paths().unwrap_or_else(default_claude_config_paths);
+    claude_injection_snapshot_for_path(port, &paths.settings_path)
+}
+
+fn claude_injection_snapshot_for_path(
+    port: u16,
+    settings_path: &std::path::Path,
+) -> InjectionSnapshot {
+    let current = claude_settings_points_to_ccr(settings_path, port);
+    claude_injection_snapshot_from_status(current, check_activation_status())
+}
+
+fn claude_injection_snapshot_from_status(
+    current: bool,
+    status: ActivationStatus,
+) -> InjectionSnapshot {
+    match status {
         ActivationStatus::Activated {
             backup_path,
             backup_time,
@@ -124,10 +183,6 @@ pub fn claude_injection_snapshot(port: u16) -> InjectionSnapshot {
     }
 }
 
-fn claude_points_to_ccr(port: u16) -> bool {
-    claude_settings_points_to_ccr(&claude_config_path(), port)
-}
-
 fn claude_settings_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
@@ -144,8 +199,10 @@ fn claude_settings_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
 
 /// Activate CCR: backup Claude config and install CCR config
 pub fn activate_ccr() -> Result<()> {
-    let claude_path = claude_config_path();
-    let plugin_path = claude_plugin_config_path();
+    let ccr_config = ccr_config()?;
+    let paths = claude_config_paths_from_settings(&ccr_config.app_settings);
+    let claude_path = paths.settings_path;
+    let plugin_path = paths.plugin_config_path;
     let backup_path = claude_backup_path();
     let plugin_backup_path = claude_plugin_backup_path();
     let timestamped_backup = claude_timestamped_backup_path();
@@ -181,7 +238,6 @@ pub fn activate_ccr() -> Result<()> {
         &plugin_missing_marker,
     )?;
 
-    let ccr_config = ccr_config()?;
     let port = ccr_port(&ccr_config);
     install_claude_settings(
         &claude_path,
@@ -204,8 +260,10 @@ pub fn activate_ccr() -> Result<()> {
 
 /// Deactivate CCR: restore original Claude config from backup
 pub fn deactivate_ccr() -> Result<()> {
-    let claude_path = claude_config_path();
-    let plugin_path = claude_plugin_config_path();
+    let ccr_config = ccr_config()?;
+    let paths = claude_config_paths_from_settings(&ccr_config.app_settings);
+    let claude_path = paths.settings_path;
+    let plugin_path = paths.plugin_config_path;
     let backup_path = claude_backup_path();
     let plugin_backup_path = claude_plugin_backup_path();
     let missing_marker = claude_missing_marker_path();
@@ -441,6 +499,78 @@ mod tests {
         let path = claude_plugin_config_path();
         assert!(path.to_string_lossy().contains(".claude"));
         assert!(path.ends_with("config.json"));
+    }
+
+    #[test]
+    fn claude_paths_use_defaults_when_override_unset_or_blank() {
+        let unset = AppSettings::default();
+        let mut blank = AppSettings::default();
+        blank.claude_config_path = Some("  ".to_string());
+
+        assert_eq!(
+            claude_config_paths_from_settings(&unset),
+            default_claude_config_paths()
+        );
+        assert_eq!(
+            claude_config_paths_from_settings(&blank),
+            default_claude_config_paths()
+        );
+    }
+
+    #[test]
+    fn claude_paths_use_override_settings_and_sibling_plugin_config() {
+        let temp = TempDir::new().unwrap();
+        let settings_path = temp.path().join("custom").join("settings.json");
+        let settings = AppSettings {
+            claude_config_path: Some(settings_path.display().to_string()),
+            ..Default::default()
+        };
+
+        let paths = claude_config_paths_from_settings(&settings);
+
+        assert_eq!(paths.settings_path, settings_path);
+        assert_eq!(
+            paths.plugin_config_path,
+            temp.path().join("custom").join("config.json")
+        );
+    }
+
+    #[test]
+    fn claude_snapshot_reports_current_and_drifted_from_resolved_path() {
+        let temp = TempDir::new().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let backup_path = temp.path().join("backup.json");
+        let config = build_claude_settings("", 3456, &models(), false).unwrap();
+        fs::write(&settings_path, serde_json::to_string(&config).unwrap()).unwrap();
+
+        assert!(claude_settings_points_to_ccr(&settings_path, 3456));
+        assert!(!claude_settings_points_to_ccr(&settings_path, 4567));
+        assert_eq!(
+            claude_injection_snapshot_from_status(
+                true,
+                ActivationStatus::Activated {
+                    backup_path: backup_path.clone(),
+                    backup_time: Some("now".to_string()),
+                },
+            ),
+            InjectionSnapshot::ActiveAndCurrent {
+                backup_path: backup_path.display().to_string(),
+                backup_time: Some("now".to_string()),
+            }
+        );
+        assert_eq!(
+            claude_injection_snapshot_from_status(
+                false,
+                ActivationStatus::Activated {
+                    backup_path: backup_path.clone(),
+                    backup_time: None,
+                },
+            ),
+            InjectionSnapshot::ActiveButDrifted {
+                backup_path: backup_path.display().to_string(),
+                backup_time: None,
+            }
+        );
     }
 
     #[test]
@@ -744,6 +874,71 @@ mod tests {
         assert_eq!(written["theme"], "dark");
         assert_eq!(written["primaryApiKey"], "any");
         assert!(!plugin_path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn claude_activation_and_restore_helpers_use_resolved_override_targets() {
+        let temp = TempDir::new().unwrap();
+        let settings_path = temp.path().join("custom").join("settings.json");
+        let settings = AppSettings {
+            claude_config_path: Some(settings_path.display().to_string()),
+            ..Default::default()
+        };
+        let paths = claude_config_paths_from_settings(&settings);
+        let backup_path = temp.path().join("backups").join("settings.backup.json");
+        let timestamped_path = temp.path().join("backups").join("settings.timestamp.json");
+        let missing_marker = temp.path().join("backups").join("settings.missing");
+        let plugin_backup_path = temp.path().join("backups").join("plugin.backup.json");
+        let plugin_missing_marker = temp.path().join("backups").join("plugin.missing");
+
+        fs::create_dir_all(paths.settings_path.parent().unwrap()).unwrap();
+        fs::write(&paths.settings_path, r#"{"env":{"EXISTING":"1"}}"#).unwrap();
+        fs::write(&paths.plugin_config_path, r#"{"theme":"dark"}"#).unwrap();
+
+        let original_settings = prepare_claude_activation_files(
+            &paths.settings_path,
+            &backup_path,
+            &timestamped_path,
+            &missing_marker,
+        )
+        .unwrap();
+        let original_plugin = prepare_claude_plugin_activation_files(
+            &paths.plugin_config_path,
+            &plugin_backup_path,
+            &plugin_missing_marker,
+        )
+        .unwrap();
+        install_claude_settings(
+            &paths.settings_path,
+            &original_settings,
+            4567,
+            &models(),
+            false,
+        )
+        .unwrap();
+        install_claude_plugin_config(&paths.plugin_config_path, &original_plugin).unwrap();
+
+        assert!(claude_settings_points_to_ccr(&paths.settings_path, 4567));
+        let plugin: Value =
+            serde_json::from_str(&fs::read_to_string(&paths.plugin_config_path).unwrap()).unwrap();
+        assert_eq!(plugin["primaryApiKey"], "any");
+
+        restore_claude_settings(&paths.settings_path, &backup_path, &missing_marker).unwrap();
+        restore_claude_settings(
+            &paths.plugin_config_path,
+            &plugin_backup_path,
+            &plugin_missing_marker,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&paths.settings_path).unwrap(),
+            r#"{"env":{"EXISTING":"1"}}"#
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.plugin_config_path).unwrap(),
+            r#"{"theme":"dark"}"#
+        );
     }
 
     #[test]

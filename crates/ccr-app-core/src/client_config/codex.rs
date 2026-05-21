@@ -1,9 +1,10 @@
 use super::common::{
     BackupSpec, RestoreSpec, atomic_write, backup_or_mark_missing, ccr_config, ccr_port,
-    configured_path_from_settings, local_v1_base_url, restore_backup_or_remove_generated,
+    local_v1_base_url, restore_backup_or_remove_generated,
 };
 use crate::status::{InjectionSnapshot, is_process_alive, pid_file_path, read_pid};
 use anyhow::{Context, Result};
+use ccr_types::AppSettings;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -13,22 +14,66 @@ const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
 
 /// Get Codex config file path.
 pub fn codex_config_path() -> PathBuf {
-    configured_path_from_settings(
-        |settings| settings.codex_config_path.clone(),
-        default_codex_config_path,
-    )
-}
-
-fn default_codex_config_path() -> PathBuf {
-    codex_config_dir().join("config.toml")
+    configured_codex_paths()
+        .map(|paths| paths.config_path)
+        .unwrap_or_else(default_codex_config_path)
 }
 
 /// Get Codex auth file path.
 pub fn codex_auth_path() -> PathBuf {
-    codex_config_dir().join("auth.json")
+    configured_codex_paths()
+        .map(|paths| paths.auth_path)
+        .unwrap_or_else(default_codex_auth_path)
 }
 
-fn codex_config_dir() -> PathBuf {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexConfigPaths {
+    config_path: PathBuf,
+    auth_path: PathBuf,
+}
+
+fn codex_config_paths_from_settings(settings: &AppSettings) -> CodexConfigPaths {
+    settings
+        .codex_config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .map(|config_path| {
+            let auth_path = config_path
+                .parent()
+                .map(|parent| parent.join("auth.json"))
+                .unwrap_or_else(default_codex_auth_path);
+            CodexConfigPaths {
+                config_path,
+                auth_path,
+            }
+        })
+        .unwrap_or_else(default_codex_config_paths)
+}
+
+fn configured_codex_paths() -> Option<CodexConfigPaths> {
+    ccr_config()
+        .ok()
+        .map(|config| codex_config_paths_from_settings(&config.app_settings))
+}
+
+fn default_codex_config_paths() -> CodexConfigPaths {
+    CodexConfigPaths {
+        config_path: default_codex_config_path(),
+        auth_path: default_codex_auth_path(),
+    }
+}
+
+fn default_codex_config_path() -> PathBuf {
+    default_codex_config_dir().join("config.toml")
+}
+
+fn default_codex_auth_path() -> PathBuf {
+    default_codex_config_dir().join("auth.json")
+}
+
+fn default_codex_config_dir() -> PathBuf {
     dirs_next::home_dir()
         .expect("Cannot determine home directory")
         .join(".codex")
@@ -102,8 +147,23 @@ pub fn check_codex_activation_status() -> CodexActivationStatus {
 }
 
 pub fn codex_injection_snapshot(port: u16) -> InjectionSnapshot {
-    let current = codex_points_to_ccr(port);
-    match check_codex_activation_status() {
+    let paths = configured_codex_paths().unwrap_or_else(default_codex_config_paths);
+    codex_injection_snapshot_for_path(port, &paths.config_path)
+}
+
+fn codex_injection_snapshot_for_path(
+    port: u16,
+    config_path: &std::path::Path,
+) -> InjectionSnapshot {
+    let current = codex_config_points_to_ccr(config_path, port);
+    codex_injection_snapshot_from_status(current, check_codex_activation_status())
+}
+
+fn codex_injection_snapshot_from_status(
+    current: bool,
+    status: CodexActivationStatus,
+) -> InjectionSnapshot {
+    match status {
         CodexActivationStatus::Activated {
             backup_path,
             backup_time,
@@ -121,10 +181,6 @@ pub fn codex_injection_snapshot(port: u16) -> InjectionSnapshot {
         CodexActivationStatus::Deactivated if current => InjectionSnapshot::InjectedNoBackup,
         CodexActivationStatus::Deactivated => InjectionSnapshot::Inactive,
     }
-}
-
-fn codex_points_to_ccr(port: u16) -> bool {
-    codex_config_points_to_ccr(&codex_config_path(), port)
 }
 
 fn codex_config_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
@@ -148,8 +204,10 @@ fn codex_config_points_to_ccr(path: &std::path::Path, port: u16) -> bool {
 
 /// Activate CCR for Codex by writing a local model provider to ~/.codex/config.toml.
 pub fn activate_codex_ccr() -> Result<()> {
-    let codex_path = codex_config_path();
-    let auth_path = codex_auth_path();
+    let config = ccr_config()?;
+    let paths = codex_config_paths_from_settings(&config.app_settings);
+    let codex_path = paths.config_path;
+    let auth_path = paths.auth_path;
     let backup_path = codex_backup_path();
     let auth_backup_path = codex_auth_backup_path();
     let timestamped_backup = codex_timestamped_backup_path();
@@ -178,8 +236,7 @@ pub fn activate_codex_ccr() -> Result<()> {
     )?;
     prepare_codex_auth_activation_files(&auth_path, &auth_backup_path, &auth_missing_marker)?;
 
-    let ccr_config = ccr_config()?;
-    let port = codex_port_from_config(&ccr_config);
+    let port = codex_port_from_config(&config);
     install_codex_config(&codex_path, port, &original)?;
     install_codex_auth(&auth_path)?;
 
@@ -195,8 +252,10 @@ pub fn activate_codex_ccr() -> Result<()> {
 
 /// Deactivate CCR for Codex by restoring the previous config.
 pub fn deactivate_codex_ccr() -> Result<()> {
-    let codex_path = codex_config_path();
-    let auth_path = codex_auth_path();
+    let config = ccr_config()?;
+    let paths = codex_config_paths_from_settings(&config.app_settings);
+    let codex_path = paths.config_path;
+    let auth_path = paths.auth_path;
     let backup_path = codex_backup_path();
     let auth_backup_path = codex_auth_backup_path();
     let missing_marker = codex_missing_marker_path();
@@ -400,6 +459,40 @@ mod tests {
     }
 
     #[test]
+    fn codex_paths_use_defaults_when_override_unset_or_blank() {
+        let unset = AppSettings::default();
+        let mut blank = AppSettings::default();
+        blank.codex_config_path = Some("  ".to_string());
+
+        assert_eq!(
+            codex_config_paths_from_settings(&unset),
+            default_codex_config_paths()
+        );
+        assert_eq!(
+            codex_config_paths_from_settings(&blank),
+            default_codex_config_paths()
+        );
+    }
+
+    #[test]
+    fn codex_paths_use_override_config_and_sibling_auth() {
+        let temp = TempDir::new().unwrap();
+        let config_path = temp.path().join("custom").join("config.toml");
+        let settings = AppSettings {
+            codex_config_path: Some(config_path.display().to_string()),
+            ..Default::default()
+        };
+
+        let paths = codex_config_paths_from_settings(&settings);
+
+        assert_eq!(paths.config_path, config_path);
+        assert_eq!(
+            paths.auth_path,
+            temp.path().join("custom").join("auth.json")
+        );
+    }
+
+    #[test]
     fn build_codex_config_preserves_existing_tables() {
         let original = r#"
 personality = "pragmatic"
@@ -469,6 +562,44 @@ trust_level = "trusted"
 
         assert!(codex_config_points_to_ccr(&path, 3456));
         assert!(!codex_config_points_to_ccr(&path, 4567));
+    }
+
+    #[test]
+    fn codex_snapshot_reports_current_and_drifted_from_resolved_path() {
+        let temp = TempDir::new().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let backup_path = temp.path().join("backup.toml");
+        let out = build_codex_config("", 3456).unwrap();
+        fs::write(&config_path, out).unwrap();
+
+        assert!(codex_config_points_to_ccr(&config_path, 3456));
+        assert!(!codex_config_points_to_ccr(&config_path, 4567));
+        assert_eq!(
+            codex_injection_snapshot_from_status(
+                true,
+                CodexActivationStatus::Activated {
+                    backup_path: backup_path.clone(),
+                    backup_time: Some("now".to_string()),
+                },
+            ),
+            InjectionSnapshot::ActiveAndCurrent {
+                backup_path: backup_path.display().to_string(),
+                backup_time: Some("now".to_string()),
+            }
+        );
+        assert_eq!(
+            codex_injection_snapshot_from_status(
+                false,
+                CodexActivationStatus::Activated {
+                    backup_path: backup_path.clone(),
+                    backup_time: None,
+                },
+            ),
+            InjectionSnapshot::ActiveButDrifted {
+                backup_path: backup_path.display().to_string(),
+                backup_time: None,
+            }
+        );
     }
 
     #[test]
@@ -594,6 +725,59 @@ requires_openai_auth = true
         let auth: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(auth_path).unwrap()).unwrap();
         assert_eq!(auth["OPENAI_API_KEY"], "any");
+    }
+
+    #[test]
+    fn codex_activation_and_restore_helpers_use_resolved_override_targets() {
+        let temp = TempDir::new().unwrap();
+        let config_path = temp.path().join("custom").join("config.toml");
+        let settings = AppSettings {
+            codex_config_path: Some(config_path.display().to_string()),
+            ..Default::default()
+        };
+        let paths = codex_config_paths_from_settings(&settings);
+        let backup_path = temp.path().join("backups").join("config.backup.toml");
+        let timestamped_backup = temp.path().join("backups").join("config.timestamp.toml");
+        let missing_marker = temp.path().join("backups").join("config.missing");
+        let auth_backup_path = temp.path().join("backups").join("auth.backup.json");
+        let auth_missing_marker = temp.path().join("backups").join("auth.missing");
+
+        fs::create_dir_all(paths.config_path.parent().unwrap()).unwrap();
+        fs::write(&paths.config_path, "model = \"original\"\n").unwrap();
+        fs::write(&paths.auth_path, r#"{"OPENAI_API_KEY":"real"}"#).unwrap();
+
+        let original = prepare_codex_activation_files(
+            &paths.config_path,
+            &backup_path,
+            &timestamped_backup,
+            &missing_marker,
+        )
+        .unwrap();
+        prepare_codex_auth_activation_files(
+            &paths.auth_path,
+            &auth_backup_path,
+            &auth_missing_marker,
+        )
+        .unwrap();
+        install_codex_config(&paths.config_path, 4567, &original).unwrap();
+        install_codex_auth(&paths.auth_path).unwrap();
+
+        assert!(codex_config_points_to_ccr(&paths.config_path, 4567));
+        let auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&paths.auth_path).unwrap()).unwrap();
+        assert_eq!(auth["OPENAI_API_KEY"], "any");
+
+        restore_codex_config(&paths.config_path, &backup_path, &missing_marker).unwrap();
+        restore_codex_auth(&paths.auth_path, &auth_backup_path, &auth_missing_marker).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&paths.config_path).unwrap(),
+            "model = \"original\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.auth_path).unwrap(),
+            r#"{"OPENAI_API_KEY":"real"}"#
+        );
     }
 
     #[test]
