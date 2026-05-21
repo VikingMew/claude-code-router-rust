@@ -3,7 +3,7 @@
 **状态：** resolved
 **优先级：** P1
 **关联技术债：** TD-009
-**最后更新：** 2026-05-07
+**最后更新：** 2026-05-21
 
 ## 目标
 
@@ -91,7 +91,6 @@ cargo test --workspace
 
 ## 完成偏差
 
-- 原计划希望迁移完整 Status tab view model 和 action/reducer；实际完成的是 server lifecycle、health、PID、server executable 和 additive snapshot 等高价值部分。
-- Claude/Codex/OpenCode/OpenClaw activate/deactivate 仍由 UI 直接调用 `ccr-cli` helper。
-- Route Pool runtime fetch 和 runtime metrics fetch 仍在 UI tab 内执行。
-- 没有引入统一 `StatusAction` reducer；后续如果继续解耦，应从 client injection actions 和 runtime fetch service 入手。
+- 2026-05-07 原完成范围未覆盖完整 Status tab view model/action reducer。
+- 2026-05-21 CCR-16 已迁移 Status snapshot 聚合、Route Pool config summary 和 runtime fetch bundle 到 `ccr-app-core`，并让 Status tab 通过后台任务刷新 server/client snapshots、health check、Route Pool runtime、runtime metrics 和 TTFT metrics。
+- Status tab 仍直接调度具体按钮动作，但动作在后台线程执行，egui render path 只消费 cached state 和轮询 in-memory result。
