@@ -2,7 +2,7 @@
 
 **状态：** 长期跟踪文档
 **范围：** 集中记录当前已知技术债、文档债和验证债
-**最后验证：** 2026-05-13
+**最后验证：** 2026-05-21
 
 ## 使用方式
 
@@ -25,6 +25,34 @@
 - 如果只是历史 phase 中出现旧术语，但不代表当前 runtime 行为，不需要为每个历史文件开债务；应在索引或长期文档中统一说明。
 
 ## Tracked Items
+
+### plan-007 - Windows Claude config ACL 加固
+
+**优先级：** P2（如果 Windows 发布面扩大则升 P1）
+**状态：** resolved
+**执行计划：** 无，直接修复
+
+影响：
+
+- Claude settings/plugin config 与 CCR 备份可能包含本地 auth/config 信息。
+- Windows 过去缺少等价于 Unix `0600` 的 ACL 加固，可能继承目录 ACL 并向 `Everyone` 或普通 `Users` 组开放读取。
+
+修正方向：
+
+- `crates/ccr-app-core/src/client_config/claude.rs` 的 Windows `set_secure_permissions` 使用 Windows API 设置 protected DACL，只授予当前用户读写权限。
+- 加固覆盖 Claude `settings.json`、`config.json`、固定备份、时间戳备份、plugin 备份，以及 restore 时复制回目标文件的临时文件。
+- `claude-config.backup.missing` 和 `claude-plugin-config.backup.missing` marker 只包含固定字符串 `missing`，但也通过同一 helper 加固，避免 marker 路径形成宽权限例外。
+- 不保留 `Everyone` / 普通 `Users` 读取权限；也不显式保留 `Administrators` / `SYSTEM` ACE。受保护 DACL 避免敏感 JSON 文件继续继承宽权限。
+
+验证方式：
+
+- `cfg(windows)` 测试检查 Windows DACL 只有一个 SID trustee ACE，权限为 `FILE_GENERIC_READ | FILE_GENERIC_WRITE`。
+- Unix 测试检查现有 owner-only 语义仍为 `0600`。
+- 实际 Windows 发布前仍应保留一次 `icacls` 或 PowerShell `Get-Acl` 抽查记录，用于确认打包运行环境与自动化测试一致。
+
+完成记录：
+
+- 2026-05-21：替换 Claude Windows ACL TODO，新增 Windows API helper 和 Unix/Windows 权限测试。
 
 ### plan-005 - 长期文档现状、方向和代码/文档一致性审计
 

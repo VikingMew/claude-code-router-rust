@@ -1,7 +1,7 @@
 # Security
 
 **状态：** 长期安全文档
-**最后验证：** 2026-05-08
+**最后验证：** 2026-05-21
 
 ## Security Model
 
@@ -48,6 +48,13 @@ Important paths:
 
 Config writes must avoid deleting unrelated user data.
 
+Claude activation writes and backups are security-sensitive local files. CCR
+sets Unix permissions to `0600`; on Windows it sets a protected DACL that grants
+read/write access only to the current user for `settings.json`, `config.json`
+and Claude backup JSON files. Missing-marker files contain only the fixed string
+`missing`, but use the same permission helper so they do not become a broad ACL
+exception.
+
 ## Network
 
 Outbound requests go to configured provider endpoints. The server may use configured HTTP/HTTPS/SOCKS proxies.
@@ -70,3 +77,6 @@ Current known follow-up areas:
 - Add documentation for backup retention and cleanup.
 - Add structured redaction tests for future JSONL logs.
 - Review packaging scripts for install/uninstall path safety.
+- Before widening Windows releases, record an actual Windows `icacls` or
+  PowerShell `Get-Acl` audit for Claude config ACLs; the code-level debt is
+  tracked as resolved in `docs/exec-plans/tech-debt-tracker.md#plan-007---windows-claude-config-acl-加固`.
