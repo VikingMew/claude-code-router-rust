@@ -126,7 +126,7 @@ CCR_DISABLE_TRAY=1 cargo run --bin ccr-ui
 - `docs/release.md`
 - `README.md`
 - `docs/exec-plans/active/README.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 可能修改：
 

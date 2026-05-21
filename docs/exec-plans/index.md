@@ -3,21 +3,19 @@
 **状态：** 长期索引文档
 **最后验证：** 2026-05-13
 
-This directory is the canonical home for execution plans and technical debt tracking.
+This directory is the canonical home for execution plans and completion records.
 
 It follows the article-style layout:
 
 ```text
 docs/exec-plans/
   index.md
-  tech-debt-tracker.md
   active/
   completed/
 ```
 
 ## Current Entry Points
 
-- `tech-debt-tracker.md` - known technical debt, documentation debt and validation debt.
 - `active/` - active execution plans.
 - `completed/` - completed execution plans.
 - `../long-term-roadmap.md` - long-term direction and priority buckets.
@@ -96,7 +94,7 @@ Use this outline for complex new work. The normal plan sections are the
 6. Before moving to `completed/`, update `Act / 处理与沉淀` with how deviations
    were handled, what long-term docs changed, and what debt or follow-up plans
    remain.
-7. Link it from `tech-debt-tracker.md` when it resolves or advances a debt item.
+7. Link related predecessor plans or roadmap sections when useful.
 8. Keep progress and decisions in the plan, not only in chat history.
 9. Move the plan to `completed/` when implemented and verified.
-10. Update `tech-debt-tracker.md` with completion evidence.
+10. Preserve completion evidence in the completed plan.

@@ -130,7 +130,7 @@ CCR 的产品形态是桌面 UI。CLI 可以继续作为开发、自动化和调
 - `README.md`
 - `docs/long-term-roadmap.md`
 - `docs/PRODUCT_SENSE.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 - `crates/ccr-cli/src/main.rs`
 - `crates/ccr-cli/src/lib.rs`
 - `crates/ccr-cli/src/claude_config.rs`

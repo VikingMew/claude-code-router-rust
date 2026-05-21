@@ -119,7 +119,7 @@ UI 不能把 endpoint test latency 放在同一个 TTFT summary 中。
 - `docs/provider-runtime-metrics.md`
 - `docs/long-term-roadmap.md`
 - `docs/RELIABILITY.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

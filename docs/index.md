@@ -11,7 +11,6 @@ This index is the main entry point for repository knowledge. Prefer reading the 
 - `../ARCHITECTURE.md` - crate boundaries and runtime paths.
 - `long-term-roadmap.md` - long-term product and engineering direction.
 - `exec-plans/index.md` - execution plan workflow and active/completed structure.
-- `exec-plans/tech-debt-tracker.md` - known technical debt and follow-up work.
 
 ## Product And Design
 
@@ -40,4 +39,4 @@ This index is the main entry point for repository knowledge. Prefer reading the 
 - If a document references source paths, those paths should be current or explicitly marked historical.
 - Completed phase docs may retain historical terminology.
 - Current long-term docs must not describe removed runtime behavior as supported.
-- New complex work should reference a debt item or roadmap section and create a phase plan.
+- New complex work should reference a roadmap section, gap document or existing execution plan and create an active execution plan.

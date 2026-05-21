@@ -55,7 +55,7 @@ docs/exec-plans/legacy-plans-inventory.md
 ## 修改文件
 
 - `docs/exec-plans/legacy-plans-inventory.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

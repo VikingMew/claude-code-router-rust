@@ -53,7 +53,7 @@ packaging/README.md
 - `docs/release.md`
 - `docs/index.md`
 - `packaging/macos-dmg/README.txt` optionally cross-link
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

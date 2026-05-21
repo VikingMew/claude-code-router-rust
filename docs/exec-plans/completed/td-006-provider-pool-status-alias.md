@@ -47,7 +47,7 @@ Phase 68 已要求删除 ProviderPool runtime 模型，但 server 仍存在 `/ap
 - `crates/ccr-server/src/lib.rs` 或相关 tests
 - `ARCHITECTURE.md`
 - `docs/long-term-roadmap.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

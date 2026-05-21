@@ -51,7 +51,7 @@
 - `crates/ccr-server/src/handlers.rs` 或新增 handlers module
 - `crates/ccr-ui/src/logs_tab.rs`
 - `docs/RELIABILITY.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

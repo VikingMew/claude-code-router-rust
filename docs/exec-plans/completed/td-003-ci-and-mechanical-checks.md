@@ -46,7 +46,7 @@
 - `ARCHITECTURE.md`
 - `docs/index.md`
 - `docs/exec-plans/index.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 - `docs/exec-plans/active`
 - `docs/exec-plans/completed`
 
@@ -55,7 +55,7 @@
 - `.github/workflows/ci.yml`
 - 可选：`scripts/check-docs-structure.sh`
 - `docs/QUALITY_SCORE.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 
@@ -68,7 +68,7 @@ test -f AGENTS.md
 test -f ARCHITECTURE.md
 test -f docs/index.md
 test -f docs/exec-plans/index.md
-test -f docs/exec-plans/tech-debt-tracker.md
+test -d docs/exec-plans/completed
 test -d docs/exec-plans/active
 test -d docs/exec-plans/completed
 ```

@@ -15,7 +15,7 @@
 ```text
 docs/exec-plans/
   index.md
-  tech-debt-tracker.md
+  completed/
   active/
   completed/
 ```
@@ -51,7 +51,7 @@ docs/exec-plans/
   - `docs/index.md`
   - `docs/long-term-roadmap.md`
   - `docs/exec-plans/index.md`
-  - `docs/exec-plans/tech-debt-tracker.md`
+  - `docs/exec-plans/completed/`
   - any docs referencing top-level `plans/`
 
 ## 验收测试

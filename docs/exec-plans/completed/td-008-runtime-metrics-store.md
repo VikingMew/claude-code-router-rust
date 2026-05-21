@@ -66,7 +66,7 @@ Summary 至少按 provider/route 聚合：
 - `crates/ccr-ui/src/status_tab.rs`
 - `docs/provider-runtime-metrics.md`
 - `docs/RELIABILITY.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

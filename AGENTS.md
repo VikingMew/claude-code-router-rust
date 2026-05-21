@@ -10,7 +10,6 @@ Use this file as the starting map. Do not treat it as the full manual.
 - `docs/index.md` - product, design, reliability, security and long-term docs.
 - `docs/long-term-roadmap.md` - long-term direction and decision principles.
 - `docs/exec-plans/index.md` - execution plan workflow and active/completed structure.
-- `docs/exec-plans/tech-debt-tracker.md` - known technical debt and follow-up work.
 
 ## Product Rules
 
@@ -62,7 +61,7 @@ Use narrower package tests while iterating, then run workspace tests before fini
   work in Do, verification and deviations in Check, and follow-up/debt/doc
   updates in Act.
 - Completed execution plans should record verification commands and move to `docs/exec-plans/completed/`.
-- Technical debt should be tracked in `docs/exec-plans/tech-debt-tracker.md`.
+- Follow-up work should be captured as a new execution plan under `docs/exec-plans/active/`.
 - Historical phase files live under `docs/exec-plans/completed/legacy-phase-*.md`.
 
 ## Documentation Rules

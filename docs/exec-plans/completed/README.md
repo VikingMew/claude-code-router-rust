@@ -18,6 +18,7 @@ Historical top-level phase files were migrated here as `legacy-phase-*.md`.
 
 ## Recent Plans
 
+- `plan-005-long-term-docs-current-state-and-direction-alignment.md` - aligns long-term docs with current code and removes the resolved centralized debt index.
 - `plan-013-logs-tab-progressive-reverse-loading.md` - makes Logs tab load latest logs first, progressively load older entries and avoid UI blocking on large log files.
 - `plan-012-stream-event-cross-protocol-conversion.md` - blocks unsupported cross-protocol streaming instead of passing incompatible SSE schemas through.
 - `plan-011-responses-stateful-fields-degradation.md` - preserves Responses state for Responses upstream and rejects state-only requests for non-Responses providers.

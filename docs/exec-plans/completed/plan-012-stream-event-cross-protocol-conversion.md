@@ -49,7 +49,7 @@
 - `crates/ccr-app-core/src/metrics.rs`
 - `docs/provider-api-kinds.md`
 - `docs/provider-runtime-metrics.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 
@@ -134,7 +134,7 @@ Runtime/metrics 测试：
 
 - 已处理偏差：通过 `Cross-protocol streaming conversion is not implemented` 错误阻止不兼容 SSE schema 透传。
 - 长期文档更新：`docs/provider-api-kinds.md` 记录当前已支持和未完整支持边界。
-- 新增/更新技术债：`docs/exec-plans/tech-debt-tracker.md` 将本计划完成记录更新为 resolved。
+- 新增/更新技术债：`docs/exec-plans/completed/` 将本计划完成记录更新为 resolved。
 - 后续计划：完整 streaming event schema 转换、streaming tool delta 和更细的 provider-specific multimodal 能力仍应作为后续增强继续拆分。
 
 ## 决策日志

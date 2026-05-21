@@ -53,7 +53,7 @@ TD-008 runtime metrics 已经实现了最小 upstream attempt metrics，因此�
 - `crates/ccr-server/src/main.rs`
 - `crates/ccr-ui/src/status_tab.rs`
 - `docs/provider-runtime-metrics.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

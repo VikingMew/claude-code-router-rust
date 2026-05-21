@@ -105,7 +105,7 @@
 - `docs/SECURITY.md`
 - `docs/RELIABILITY.md`
 - `docs/exec-plans/active/README.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 - `crates/ccr-types/src/lib.rs`
 - `crates/ccr-server/src/main.rs`
 - `crates/ccr-server/src/handlers/admin.rs`
@@ -165,5 +165,5 @@ cargo test --workspace
 cargo fmt --check
 cargo test --package ccr-types
 cargo test --package ccr-server
-rg -n "admin API|/api/admin|default-off|默认关闭|logs query|UI.*logs|admin_api_enabled" docs/long-term-roadmap.md docs/SECURITY.md docs/RELIABILITY.md docs/exec-plans/completed/plan-003-admin-api-default-off-ui-logs-focus.md docs/exec-plans/tech-debt-tracker.md
+rg -n "admin API|/api/admin|default-off|默认关闭|logs query|UI.*logs|admin_api_enabled" docs/long-term-roadmap.md docs/SECURITY.md docs/RELIABILITY.md docs/exec-plans/completed/plan-003-admin-api-default-off-ui-logs-focus.md docs/exec-plans/completed/
 ```

@@ -8,7 +8,7 @@
 
 本文件是长期方向入口，不替代具体执行计划。
 
-- 新 execution plan 应从本文件、`docs/cc-switch-feature-gap-analysis.md`、`docs/ccr-original-feature-gap-analysis.md` 和 `docs/exec-plans/tech-debt-tracker.md` 中选择明确问题。
+- 新 execution plan 应从本文件、`docs/cc-switch-feature-gap-analysis.md`、`docs/ccr-original-feature-gap-analysis.md` 或已有 execution plan 的后续项中选择明确问题。
 - 复杂工作必须创建独立 phase 文档，记录目标、非目标、设计方向、测试和完成状态。
 - 已完成 phase 的历史文档可以保留旧术语，但长期文档不能把已删除能力写成当前支持能力。
 - 如果代码行为和本文件不一致，先以代码为准，再更新文档或创建技术债条目。
@@ -138,7 +138,6 @@ docs/
   ccr-original-feature-gap-analysis.md
 docs/exec-plans/
   index.md
-  tech-debt-tracker.md
   active/
   completed/
 ```
@@ -157,7 +156,7 @@ docs/exec-plans/
 ### P0
 
 - 维护 `AGENTS.md` 和 `ARCHITECTURE.md`，确保它们持续作为智能体入口地图。
-- 维护 `docs/exec-plans/tech-debt-tracker.md`，把已知债务集中记录。
+- 将新的复杂后续问题直接写成 `docs/exec-plans/active/` 下的执行计划。
 - 维护基础 CI：`cargo fmt --check`、`cargo test --workspace` 和文档结构检查。
 - 保持 Route Pool-only API 命名，不恢复 `/api/provider-pool/status`。
 - 维护 logs query API，避免 UI 和智能体只能读取完整日志文件。

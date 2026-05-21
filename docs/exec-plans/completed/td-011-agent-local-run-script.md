@@ -53,7 +53,7 @@ scripts/agent-run-local
 - `scripts/agent-stop-local` or generated stop command
 - `docs/RELIABILITY.md`
 - `AGENTS.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 

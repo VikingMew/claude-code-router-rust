@@ -58,7 +58,7 @@ Endpoint test 是另一个边界清晰的功能：用户在 provider/config UI �
 - `docs/provider-runtime-metrics.md`
 - `docs/RELIABILITY.md`
 - `docs/QUALITY_SCORE.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 - `docs/exec-plans/completed/td-008-runtime-metrics-store.md`
 - `docs/exec-plans/completed/td-010-request-history.md`
 
@@ -131,7 +131,7 @@ UI 边界：
 - `docs/provider-runtime-metrics.md`
 - `docs/RELIABILITY.md`
 - `docs/QUALITY_SCORE.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 - `docs/exec-plans/completed/td-008-runtime-metrics-store.md`
 - `docs/exec-plans/completed/td-010-request-history.md`
 - `crates/ccr-app-core/src/metrics.rs`

@@ -12,11 +12,11 @@ Rules:
 - Every active plan must follow PDCA: the normal plan sections are `Plan`;
   `Do / 执行记录`, `Check / 验证与偏差` and `Act / 处理与沉淀` are updated as work
   progresses.
-- Link related debt or follow-up entries from `../tech-debt-tracker.md` when useful.
+- Link related predecessor plans, gap documents or roadmap sections when useful.
 - Keep decision logs in the plan, not in chat history.
 - Include explicit verification commands or manual QA steps.
 - Move completed plans to `../completed/`.
 
 ## Active Plans
 
-- `plan-005-long-term-docs-current-state-and-direction-alignment.md` - updates long-term docs to match current code, product state and direction, including code/doc inconsistency tracking.
+No active execution plans.

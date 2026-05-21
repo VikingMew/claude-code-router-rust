@@ -15,7 +15,7 @@ This is a lightweight scorecard for judging whether the repository is becoming e
 | Routing model clarity | 8/10 | Route Pool is current model; provider-pool status alias has been removed. |
 | Client injection clarity | 6/10 | Multiple clients supported; unified client abstraction still missing. |
 | Observability | 7/10 | Structured log query, request/attempt history and real-traffic TTFT windows exist; token and stream quality metrics remain incomplete. |
-| Documentation system | 7/10 | Docs index, execution-plan structure and tech debt tracker exist. |
+| Documentation system | 8/10 | Docs index, execution-plan structure and completed plan records are current. |
 | Release process | 5/10 | Packaging scripts and release checklist exist; signing/notarization and platform smoke automation are incomplete. |
 
 ## Quality Gates

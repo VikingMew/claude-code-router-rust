@@ -58,7 +58,7 @@ UI 只调用：
 - `crates/ccr-ui/src/settings_tab.rs`
 - `crates/ccr-cli/src/*_config.rs` as needed for shared service boundaries
 - `docs/FRONTEND.md`
-- `docs/exec-plans/tech-debt-tracker.md`
+- `docs/exec-plans/completed/`
 
 ## 验收测试
 
