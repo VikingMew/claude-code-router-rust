@@ -18,10 +18,15 @@ use ccr_app_core::status::{
     read_server_snapshot as read_server_snapshot_from_core, start_server, stop_server,
     AdditiveClientSnapshot, InjectionSnapshot, ServerSnapshot,
 };
+use ccr_app_core::{
+    metrics::{RouteMetricSummary, TtftMetricSummary},
+    runtime_status::{
+        fetch_route_pool_status, fetch_runtime_metrics_summary, fetch_ttft_metrics_summary,
+        RoutePoolStatusResponse,
+    },
+};
 use ccr_config::{default_config_path, load_config};
 use eframe::egui;
-use serde::Deserialize;
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const ROUTE_POOL_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -33,50 +38,6 @@ struct StatusSnapshot {
     codex: InjectionSnapshot,
     opencode: AdditiveClientSnapshot,
     openclaw: AdditiveClientSnapshot,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RoutePoolStatusResponse {
-    enabled: bool,
-    #[serde(rename = "failureThreshold")]
-    failure_threshold: u32,
-    #[serde(rename = "banSeconds")]
-    ban_seconds: u64,
-    routes: HashMap<String, RoutePoolRouteStatus>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RoutePoolRouteStatus {
-    consecutive_failures: u32,
-    banned_until_epoch_secs: Option<u64>,
-    last_error: Option<String>,
-    last_failure_epoch_secs: Option<u64>,
-    last_success_epoch_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RuntimeMetricSummary {
-    route: String,
-    provider: String,
-    attempts: u64,
-    successes: u64,
-    failures: u64,
-    average_latency_ms: Option<u64>,
-    last_http_status: Option<u16>,
-    last_error_class: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TtftMetricSummary {
-    route: String,
-    provider: String,
-    model: String,
-    samples: u64,
-    average_ttft_ms: Option<u64>,
-    p50_ttft_ms: Option<u64>,
-    p90_ttft_ms: Option<u64>,
-    p95_ttft_ms: Option<u64>,
-    latest_ttft_ms: Option<u64>,
 }
 
 pub struct StatusTab {
@@ -94,7 +55,7 @@ pub struct StatusTab {
     server_operation_status: String,
     server_operation_checking: bool,
     route_pool_status: Option<Result<RoutePoolStatusResponse, String>>,
-    runtime_metrics_summary: Option<Result<Vec<RuntimeMetricSummary>, String>>,
+    runtime_metrics_summary: Option<Result<Vec<RouteMetricSummary>, String>>,
     ttft_metrics_summary: Option<Result<Vec<TtftMetricSummary>, String>>,
     route_pool_last_refresh: Option<Instant>,
 }
@@ -657,87 +618,6 @@ fn show_status_message(ui: &mut egui::Ui, message: &str) {
     }
 }
 
-fn fetch_route_pool_status(
-    port: u16,
-    api_key: Option<&str>,
-) -> Result<RoutePoolStatusResponse, String> {
-    let url = format!("http://127.0.0.1:{}/api/route-pool/status", port);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        if response.status().as_u16() == 401 {
-            return Err(
-                "unauthorized. The UI config API key does not match the running server."
-                    .to_string(),
-            );
-        }
-        return Err(format!("HTTP {}", response.status()));
-    }
-    response.json().map_err(|error| error.to_string())
-}
-
-fn fetch_runtime_metrics_summary(
-    port: u16,
-    api_key: Option<&str>,
-) -> Result<Vec<RuntimeMetricSummary>, String> {
-    let url = format!("http://127.0.0.1:{}/api/runtime-metrics/summary", port);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        if response.status().as_u16() == 401 {
-            return Err(
-                "unauthorized. The UI config API key does not match the running server."
-                    .to_string(),
-            );
-        }
-        return Err(format!("HTTP {}", response.status()));
-    }
-    response.json().map_err(|error| error.to_string())
-}
-
-fn fetch_ttft_metrics_summary(
-    port: u16,
-    api_key: Option<&str>,
-) -> Result<Vec<TtftMetricSummary>, String> {
-    let url = format!(
-        "http://127.0.0.1:{}/api/runtime-metrics/ttft-summary?window=300",
-        port
-    );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut request = client.get(&url);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        if response.status().as_u16() == 401 {
-            return Err(
-                "unauthorized. The UI config API key does not match the running server."
-                    .to_string(),
-            );
-        }
-        return Err(format!("HTTP {}", response.status()));
-    }
-    response.json().map_err(|error| error.to_string())
-}
-
 fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) {
     ui.label(format!(
         "Route Pool runtime: enabled={}, policy {} failures, {}s ban",
@@ -776,7 +656,7 @@ fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) 
     }
 }
 
-fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RuntimeMetricSummary]) {
+fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RouteMetricSummary]) {
     ui.label("Runtime metrics from real client traffic:");
     if summary.is_empty() {
         ui.label("No real upstream attempts recorded.");
