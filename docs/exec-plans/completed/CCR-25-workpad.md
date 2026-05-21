@@ -13,7 +13,8 @@
 - Merged current `origin/master` into `vikingmew-ccr-25`.
 - Resolved conflicts in Claude/Codex client config modules by preserving CCR-25 shared helpers and master path override behavior for Claude plugin config and Codex auth.
 - Resolved `status_tab.rs` by keeping master app-core `read_status_snapshot` usage and CCR-25 additive snapshot behavior from app-core.
-- Pushed `vikingmew-ccr-25` at `0d55ec6`.
+- Pushed `vikingmew-ccr-25` after conflict resolution at `0d55ec6`.
+- Moved this workpad to completed and pushed `vikingmew-ccr-25` at `aabd86e`.
 
 ## Check
 
