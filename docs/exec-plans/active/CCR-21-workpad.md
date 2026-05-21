@@ -6,3 +6,8 @@
 ## Interpretation
 
 The newest human Linear comment says to decide whether legacy scenario routing is compatibility to remove/document, or to reintroduce it only as Route Pool policy/rule. This implementation treats `background`, `think`, `webSearch`, `longContext`, `image`, project router override and custom router override as not-current runtime goals. The code path remains Route Pool-only, so unused `ccr-router` primary/scenario routing APIs are removed and surviving config fields are documented as legacy deserialization compatibility.
+
+## Continuation Notes
+
+- 2026-05-21 continuation #2: branch `vikingmew-ccr-21` was clean and pushed at `fea95f476cf624aee8c56d41e43ea69246c85645`; restricted Linear API returned `Workflow profile is unavailable for this Codex session`, so the issue state could not be read or transitioned.
+- 2026-05-21 continuation #3: branch remained clean and pushed at `fea95f476cf624aee8c56d41e43ea69246c85645`; required legacy API `rg` remained empty; `cargo fmt --check` and `cargo test --package ccr-router` passed. Public GitHub API showed no PR for `VikingMew:vikingmew-ccr-21`, but no GitHub token and no `gh` executable were available to create one. Restricted Linear API still returned `Workflow profile is unavailable for this Codex session`, so the issue state still could not be read or transitioned from this session.
