@@ -119,14 +119,26 @@ pub struct TransformerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RouterConfig {
+    /// Legacy configuration field retained for deserializing existing configs.
+    /// Server runtime does not use this for upstream selection; Route Pool
+    /// candidates are the only runtime routing source.
     pub background: Option<String>,
+    /// Legacy configuration field retained for deserializing existing configs.
+    /// Server runtime does not use this for upstream selection.
     pub think: Option<String>,
+    /// Legacy configuration field retained for deserializing existing configs.
+    /// Server runtime does not use this for upstream selection.
     #[serde(rename = "longContext")]
     pub long_context: Option<String>,
+    /// Legacy tokenizer threshold paired with `longContext`; not runtime routing policy.
     #[serde(rename = "longContextThreshold")]
     pub long_context_threshold: Option<u64>,
+    /// Legacy configuration field retained for deserializing existing configs.
+    /// Server runtime does not use this for upstream selection.
     #[serde(rename = "webSearch")]
     pub web_search: Option<String>,
+    /// Legacy configuration field retained for deserializing existing configs.
+    /// Server runtime does not use this for upstream selection.
     pub image: Option<String>,
     #[serde(rename = "tokenizerBackend", default)]
     pub tokenizer_backend: TokenizerBackend,
