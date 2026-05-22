@@ -262,6 +262,14 @@ fn endpoint_result_label(result: &EndpointTestResult) -> String {
     match result.status {
         EndpointStatus::Available => "Available".to_string(),
         EndpointStatus::HttpError(status) => format!("Failed, HTTP {status}"),
+        EndpointStatus::MissingCredential => result
+            .error
+            .clone()
+            .unwrap_or_else(|| "Credential missing".to_string()),
+        EndpointStatus::CredentialUnsupported => result
+            .error
+            .clone()
+            .unwrap_or_else(|| "Credential source unsupported".to_string()),
         EndpointStatus::Timeout => "Timeout".to_string(),
         EndpointStatus::NetworkError => result
             .error

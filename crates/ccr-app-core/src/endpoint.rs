@@ -1,3 +1,4 @@
+use crate::official_provider::{SecretResolutionError, resolve_provider_api_key};
 use crate::provider_kind::{
     EndpointTestMode, provider_api_kind_defaults, resolve_provider_api_kind,
 };
@@ -10,6 +11,8 @@ use std::time::{Duration, Instant};
 pub enum EndpointStatus {
     Available,
     HttpError(u16),
+    MissingCredential,
+    CredentialUnsupported,
     Timeout,
     NetworkError,
     InvalidUrl,
@@ -224,7 +227,30 @@ pub fn test_endpoint(provider: &Provider, endpoint: &str) -> EndpointTestResult 
         .build()
         .unwrap();
     let start = Instant::now();
-    let test_request = endpoint_test_request(provider);
+    let test_request = match endpoint_test_request_resolved(provider) {
+        Ok(request) => request,
+        Err(error) => {
+            let (status, status_text) = endpoint_status_for_secret_error(&error);
+            let error_text = error.to_string();
+            log_endpoint_event(
+                "credential_unavailable",
+                &[
+                    ("provider", provider_name.clone()),
+                    ("endpoint", endpoint.to_string()),
+                    ("status", status_text.to_string()),
+                    ("error", error_text.clone()),
+                ],
+            );
+            return EndpointTestResult {
+                provider_name,
+                endpoint: endpoint.to_string(),
+                status,
+                latency_ms: None,
+                stream_available: None,
+                error: Some(error_text),
+            };
+        }
+    };
     log_endpoint_start(provider, endpoint, &test_request);
     let result = client
         .post(endpoint)
@@ -310,7 +336,9 @@ pub fn test_endpoint(provider: &Provider, endpoint: &str) -> EndpointTestResult 
 }
 
 fn check_stream_endpoint(client: &Client, provider: &Provider, endpoint: &str) -> bool {
-    let mut test_request = endpoint_test_request(provider);
+    let Ok(mut test_request) = endpoint_test_request_resolved(provider) else {
+        return false;
+    };
     match resolve_provider_api_kind(provider).kind {
         ccr_types::ProviderApiKind::OpenAiResponses => {
             test_request.body["stream"] = serde_json::json!(true);
@@ -380,6 +408,18 @@ fn check_stream_endpoint(client: &Client, provider: &Provider, endpoint: &str) -
 }
 
 pub fn endpoint_test_request(provider: &Provider) -> EndpointTestRequest {
+    let api_key = resolve_provider_api_key(provider).unwrap_or_else(|_| provider.api_key.clone());
+    endpoint_test_request_with_api_key(provider, &api_key)
+}
+
+pub fn endpoint_test_request_resolved(
+    provider: &Provider,
+) -> Result<EndpointTestRequest, SecretResolutionError> {
+    let api_key = resolve_provider_api_key(provider)?;
+    Ok(endpoint_test_request_with_api_key(provider, &api_key))
+}
+
+fn endpoint_test_request_with_api_key(provider: &Provider, api_key: &str) -> EndpointTestRequest {
     let kind = resolve_provider_api_kind(provider).kind;
     let defaults = provider_api_kind_defaults(kind, provider.models.first().map(String::as_str));
     let model = endpoint_test_model(provider, kind);
@@ -387,10 +427,7 @@ pub fn endpoint_test_request(provider: &Provider) -> EndpointTestRequest {
     match defaults.endpoint_test_mode {
         EndpointTestMode::OpenAiResponses => EndpointTestRequest {
             headers: vec![
-                (
-                    "authorization".to_string(),
-                    format!("Bearer {}", provider.api_key),
-                ),
+                ("authorization".to_string(), format!("Bearer {api_key}")),
                 ("content-type".to_string(), "application/json".to_string()),
             ],
             body: serde_json::json!({
@@ -405,7 +442,7 @@ pub fn endpoint_test_request(provider: &Provider) -> EndpointTestRequest {
         },
         EndpointTestMode::AnthropicMessages => EndpointTestRequest {
             headers: vec![
-                ("x-api-key".to_string(), provider.api_key.clone()),
+                ("x-api-key".to_string(), api_key.to_string()),
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
                 ("content-type".to_string(), "application/json".to_string()),
             ],
@@ -421,10 +458,7 @@ pub fn endpoint_test_request(provider: &Provider) -> EndpointTestRequest {
         },
         EndpointTestMode::OpenAiChat | EndpointTestMode::BasicPost => EndpointTestRequest {
             headers: vec![
-                (
-                    "authorization".to_string(),
-                    format!("Bearer {}", provider.api_key),
-                ),
+                ("authorization".to_string(), format!("Bearer {api_key}")),
                 ("content-type".to_string(), "application/json".to_string()),
             ],
             body: serde_json::json!({
@@ -437,6 +471,20 @@ pub fn endpoint_test_request(provider: &Provider) -> EndpointTestRequest {
             mode: defaults.endpoint_test_mode,
             model,
         },
+    }
+}
+
+fn endpoint_status_for_secret_error(
+    error: &SecretResolutionError,
+) -> (EndpointStatus, &'static str) {
+    match error {
+        SecretResolutionError::Missing { .. } => {
+            (EndpointStatus::MissingCredential, "missing_credential")
+        }
+        SecretResolutionError::UnsupportedSafeRead { .. } => (
+            EndpointStatus::CredentialUnsupported,
+            "credential_unsupported",
+        ),
     }
 }
 
@@ -868,6 +916,24 @@ mod tests {
 
         assert_eq!(result.status, EndpointStatus::InvalidUrl);
         assert_eq!(result.error.as_deref(), Some("Invalid URL"));
+    }
+
+    #[test]
+    fn test_endpoint_reports_unsupported_official_credential_without_network() {
+        let mut provider = provider();
+        provider.api_kind = Some(ProviderApiKind::OpenAiChat);
+        provider.api_kind_source = ProviderApiKindSource::Explicit;
+        provider.api_key = crate::official_provider::GITHUB_COPILOT_OFFICIAL_SECRET.to_string();
+
+        let result = test_endpoint(&provider, "https://api.githubcopilot.com/chat/completions");
+
+        assert_eq!(result.status, EndpointStatus::CredentialUnsupported);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("credential is unsupported"))
+        );
     }
 
     #[test]

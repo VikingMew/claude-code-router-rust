@@ -1,3 +1,4 @@
+use ccr_app_core::official_provider::resolve_provider_api_key;
 use ccr_app_core::provider_kind::{
     EndpointTestMode, provider_api_kind_defaults, resolve_provider_api_kind,
 };
@@ -61,7 +62,8 @@ pub fn build_upstream_request(
     Ok(UpstreamRequest {
         route: route.to_string(),
         url: provider.api_base_url.clone(),
-        headers: upstream_headers(provider),
+        headers: upstream_headers_resolved(provider)
+            .map_err(|error| format!("provider credential unavailable: {error}"))?,
         body: upstream_body,
         stream,
         model: upstream_model,
@@ -70,21 +72,28 @@ pub fn build_upstream_request(
 }
 
 pub fn upstream_headers(provider: &Provider) -> Vec<(String, String)> {
+    let api_key = resolve_provider_api_key(provider).unwrap_or_else(|_| provider.api_key.clone());
+    upstream_headers_with_api_key(provider, &api_key)
+}
+
+pub fn upstream_headers_resolved(provider: &Provider) -> Result<Vec<(String, String)>, String> {
+    let api_key = resolve_provider_api_key(provider).map_err(|error| error.to_string())?;
+    Ok(upstream_headers_with_api_key(provider, &api_key))
+}
+
+fn upstream_headers_with_api_key(provider: &Provider, api_key: &str) -> Vec<(String, String)> {
     let mode = provider_api_kind_defaults(resolve_provider_api_kind(provider).kind, None)
         .endpoint_test_mode;
     let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
     match mode {
         EndpointTestMode::AnthropicMessages => {
-            headers.push(("x-api-key".to_string(), provider.api_key.clone()));
+            headers.push(("x-api-key".to_string(), api_key.to_string()));
             headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
         }
         EndpointTestMode::OpenAiChat
         | EndpointTestMode::OpenAiResponses
         | EndpointTestMode::BasicPost => {
-            headers.push((
-                "authorization".to_string(),
-                format!("Bearer {}", provider.api_key),
-            ));
+            headers.push(("authorization".to_string(), format!("Bearer {api_key}")));
         }
     }
     headers

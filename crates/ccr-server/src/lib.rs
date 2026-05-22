@@ -6,7 +6,7 @@ use serde_json::Value;
 
 pub use protocol::body_mapping::{
     InboundProtocol, UpstreamRequest, build_upstream_request, prepare_responses_body,
-    route_model_override, upstream_headers, upstream_model_name,
+    route_model_override, upstream_headers, upstream_headers_resolved, upstream_model_name,
 };
 pub use route_pool_config::{
     provider_for_route, provider_names, provider_not_found_message, route_for_display,

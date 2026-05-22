@@ -68,6 +68,11 @@ Linear CCR-24 描述指出 `crates/ccr-server/src/main.rs` 和 `src/lib.rs` 承�
   - `cargo fmt --check` passed.
   - `cargo test --package ccr-server` passed: lib 38 tests, bin 9 tests, doctests 0.
   - `cargo test --workspace` passed across workspace crates and doctests.
+  - 2026-05-22 merge resolution: `cargo fmt --check` passed.
+  - 2026-05-22 merge resolution: `cargo test --package ccr-server` passed: lib 38 tests, bin 10 tests, doctests 0.
+  - 2026-05-22 merge resolution: `cargo test --package ccr-router tokenizer_count_tokens_async_api_uses_http_and_caches_result` passed.
+  - 2026-05-22 merge resolution: `cargo test --package ccr-app-core runtime_status` passed.
+  - 2026-05-22 merge resolution: `cargo test --workspace` passed across workspace crates and doctests.
 - 手工 QA:
   - Inspected module placement and line counts after split: `main.rs` 867 lines, `lib.rs` 66 lines, Route Pool runtime 632 lines, metrics 184 lines, Responses stream 344 lines, runtime metrics handler 88 lines.
 - 发现的偏差:
@@ -89,6 +94,8 @@ Linear CCR-24 描述指出 `crates/ccr-server/src/main.rs` 和 `src/lib.rs` 承�
 ## 决策日志
 
 - 2026-05-22: 以 Linear 描述和唯一范围细化评论为准；本任务只做 `ccr-server` 内部行为保持拆分。
+- 2026-05-22: 最新 Linear 人工评论为“有代码合并冲突”。解释为已完成拆分需与当前 `origin/master` 解决合并冲突，保持 CCR-24 原行为保持重构范围，不新增产品行为。
+- 2026-05-22: 合并 `origin/master` 时保留 CCR-24 server 模块拆分，并将 master 新增的 official provider API key resolution 接入 `protocol/body_mapping.rs`；本地 tokenizer/status 测试暴露无 `NO_PROXY` 环境下 loopback 请求被代理的问题，修正为 loopback-only runtime calls 绕过代理。
 
 ## 完成记录
 
