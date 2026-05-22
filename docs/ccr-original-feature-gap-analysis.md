@@ -16,9 +16,7 @@ Gemini 相关能力不进入当前 Rust 产品目标。原版 CCR 中与 Gemini 
 ## 当前 Rust 已具备的原版相关能力
 
 - Provider / Router / Transformer 基础配置模型
-- Router 场景：default、background、think、longContext、webSearch、image
-- Subagent model tag 路由
-- Custom JS router，使用 QuickJS 执行 `router.js` 或 `CUSTOM_ROUTER_PATH`
+- Route Pool-only server routing：upstream attempts 只来自 enabled Route Pool candidates
 - SSE parser、serializer、rewrite stream
 - Image agent 基础能力
 - Config load/save、环境变量插值、JSON5、备份
@@ -32,6 +30,8 @@ Gemini 相关能力不进入当前 Rust 产品目标。原版 CCR 中与 Gemini 
 - 多个常用 transformer 已移植：anthropic、openai、deepseek、cleancache、tooluse、reasoning、forcereasoning、streamoptions、openrouter、groq、enhancetool、vertex-claude、cerebras、vercel、maxtoken、maxcompletiontokens 等
 - Rust 额外能力：provider API kind 显式/推断、Route Pool ordering、endpoint speed test、auto launch、Claude/Codex 原生配置注入
 - Claude Code model env 独立配置，不再从 CCR route model 推导
+
+原版 CCR 的 scenario router（default、background、think、longContext、webSearch、image）、subagent model tag 路由和 Custom JS router 不属于当前 Rust runtime 能力。保留的同名 config 字段只用于 legacy config deserialization compatibility，不能作为当前主路由模型扩展。
 
 ## 功能缺口总表
 

@@ -26,25 +26,21 @@ Claude Code 支持通过环境变量表达模型默认值或模型类别：
 - `ANTHROPIC_DEFAULT_SONNET_MODEL`
 - `ANTHROPIC_DEFAULT_OPUS_MODEL`
 
-这些字段是 Claude Code 侧的模型映射。它们用于让 Claude Code 生成请求时选择它认识的模型名或模型类别。CCR 收到请求后，再通过 Router 场景路由和 Route Pool 把请求映射到真实上游 route。
+这些字段是 Claude Code 侧的模型映射。它们用于让 Claude Code 生成请求时选择它认识的模型名或模型类别。CCR 收到请求后，由 server 通过 Route Pool 把请求映射到真实上游 route。
 
 因此默认 through-CCR 模式不应该把 CCR 上游 route model 写入这些 env。例如 `glm-4.6`、`gpt-5-codex` 这类上游模型名不应该自动成为 Claude Code 的默认 haiku/sonnet/opus。
 
 ## CCR 上游路由模型
 
-CCR 的真实上游模型来源于：
+当前 CCR runtime 的真实上游 route 来源于：
 
-- `RoutePool` 第一条启用 route
-- `Router.background`
-- `Router.think`
-- `Router.longContext`
-- `Router.webSearch`
-- `Router.image`
-- Project-level router
-- Custom router
+- enabled `RoutePool.candidates`
 - Route Pool candidate order
+- Route Pool runtime health, ban and retry state
 
-这些 route 通常使用 `provider,model` 形式，例如：
+`Router.background`、`Router.think`、`Router.longContext`、`Router.webSearch`、`Router.image` 以及 project/custom router override 是 legacy config compatibility，不是当前 server runtime 的上游选择语义。
+
+Route Pool route 通常使用 `provider,model` 形式，例如：
 
 ```json
 {
@@ -53,9 +49,6 @@ CCR 的真实上游模型来源于：
     "candidates": [
       { "route": "zhipu,glm-4.6", "enabled": true, "priority": 0 }
     ]
-  },
-  "Router": {
-    "think": "anthropic,claude-sonnet-4-20250514"
   }
 }
 ```
@@ -131,22 +124,15 @@ CCR 的真实上游模型来源于：
 
 Router UI 需要提供这些配置入口：
 
-- Route Pool 第一条启用 route 的明确“主路由”解释。
-- `Router.background`
-- `Router.think`
-- `Router.longContext`
-- `Router.webSearch`
-- `Router.image`
+- Route Pool candidates 的构建、启用、禁用、排序和状态解释。
 - per-client / per-model route rule，例如 Claude Code Sonnet -> `zenmux,glm`
 
 Router UI 需要解释这些规则之间的关系：
 
-- 场景路由命中时使用对应场景 route。
-- 场景 route 未配置或为空时使用 Route Pool。
 - Route Pool 按启用顺序和运行时健康状态选择候选 route。
 - provider-only route 表示 `Use request model`。
 - `provider,model` route 表示 `Fixed model`。
-- per-client / per-model route rule 用于精细替换某类 client-visible model，不应该混同于 Claude Code env model mapping。
+- per-client / per-model route rule 如果实现，必须建模为 Route Pool policy/rule，覆盖 server runtime、UI/status 行为和测试；不能绕过 Route Pool 或恢复 legacy Router 场景 route。
 
 ## Client 注入设计要求
 
