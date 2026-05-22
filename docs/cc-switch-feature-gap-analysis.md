@@ -1,7 +1,7 @@
 # cc-switch Feature Gap Analysis
 
 **状态：** 长期跟踪文档  
-**最后更新：** Phase 68 后  
+**最后验证：** 2026-05-22
 **范围：** 记录 `../cc-switch` 支持、但当前 `ccr-rust` 未支持或未完整支持的能力  
 **用途：** 作为后续 phase 拆分依据，不代表所有功能都必须实现
 
@@ -36,6 +36,7 @@
 - Provider API kind 的选择、推断、显式选择状态
 - Provider / Router / Transformer 的基础配置 UI；Router 已使用左右双列表的 Route Pool 工作区
 - Server through-CCR pipeline：`/v1/messages` 和 `/v1/responses` 共用 upstream request 构建，按 provider kind 生成 body/header
+- Responses 最小可靠映射：基础 provider API kind 协议矩阵、Responses reasoning 保留/降级策略、非流式 tool request 映射、text/image multimodal 映射、stateful 字段保留/拒绝策略，以及不兼容跨协议 streaming gate
 - Route Pool provider/model 排序，以及网络错误、5xx、429 的 server retry
 - Endpoint candidates、批量测速、stream heuristic、测速结果写入 Route Pool
 - 开机自启动设置
@@ -47,7 +48,7 @@
 
 - Client 注入当前只负责把 Claude/Codex 指向本地 CCR server；Claude Code model env 已独立于 CCR route model；尚未提供 direct-to-provider 模式选择和预览
 - Tray task icon 只是基础入口，不等价于完整桌面控制面板
-- Codex `/v1/responses` 到目标 provider 的最小协议转换已接入；tool call、reasoning、multi-modal 等复杂 Responses 映射仍缺
+- Codex `/v1/responses` 到目标 provider 的最小协议转换已接入；剩余边界是完整跨协议 stream event schema 转换、streaming tool delta、provider-specific multimodal 细节，以及 tool result/error/max token/sampling 等更多协议边界测试
 - Provider / Router / Transformer UI 仍缺完整校验、diff、preview 和插件管理
 - Route Pool 仍缺 health score、event log、retry budget、清除 ban 状态和真实 HTTP retry 链路 mock 测试
 - Endpoint test 仍缺历史记录、模型级结果和 health/Route Pool 联动
@@ -67,6 +68,7 @@
 | MCP 管理 | import/sync/toggle/validate/presets | 无 | 后期 |
 | Skills 管理 | repo/install/import/sync | 无 | 后期 |
 | 本地代理接管 | proxy takeover、hot switch、adapter、health | CCR server routing | 长期缺口 |
+| Responses 协议转换 | provider adapter 中处理 Responses、Messages、Chat 等请求/响应 shape | 已有最小 request/header 转换、Responses reasoning 降级、非流式 tool request 映射、image multimodal 映射、stateful 字段策略和 streaming gate；缺完整 stream event schema、streaming tool delta、provider-specific multimodal 能力矩阵 | 继续补齐 |
 | Route Pool | 排序、策略、UI、health/circuit breaker | 已有左右双列表 Route Pool UI、连续失败 ban、网络/5xx/429 retry，且每次 attempt 会按目标 provider 重建 body/header；缺 health score、事件日志、retry budget、清除 ban 状态 | 继续补齐 |
 | Usage 统计 | 请求日志、价格、用量、脚本统计 | 基础日志 | 长期缺口 |
 | Session 管理 | session 列表、消息、resume | 无 | 后期 |
@@ -163,7 +165,25 @@ Phase 46 已经修正 Claude/Codex 的原生写入方向，Phase 53 已经加入
 - 用户显式选择过 provider kind 后不能被推断覆盖
 - provider kind 变更后，Config、Endpoint Test、Server routing 使用同一套解析结果
 
-### 6. 本地代理接管和协议转换
+### 6. Responses 协议转换边界
+
+当前 Rust server 已完成最小可靠能力：
+
+- `/v1/messages` 和 `/v1/responses` 会按目标 provider API kind 重建 upstream body/header。
+- OpenAI Responses upstream 保留兼容的 Responses `reasoning` 字段；OpenAI Chat 和 Anthropic Messages upstream 不透传非法 Responses-only reasoning 字段。
+- 非流式 request body 已有基础 tool request 映射，包括 Anthropic `tool_use` 到 OpenAI Chat `tool_calls`。
+- text/image content 已有有限 multimodal 映射；不支持的 content type 会明确拒绝。
+- Responses `previous_response_id`、`conversation_id`、`prompt` 等 stateful 字段在 Responses upstream 保留，state-only 请求发往非 Responses provider 时明确拒绝。
+- 不兼容跨协议 streaming 当前会被 build error gate 阻止，避免错误 SSE schema passthrough。
+
+仍缺的真实边界：
+
+- 完整跨协议 stream event schema 转换。
+- streaming tool delta 的跨协议转换。
+- 更细的 provider-specific multimodal 能力矩阵、UI 提示和配置校验。
+- tool result、error、max token、sampling 等字段的更多协议边界测试。
+
+### 7. 本地代理接管和协议转换
 
 `cc-switch` 的 proxy 是桌面应用内部的一套代理接管系统，支持 provider adapter、request/response transform、streaming、body filtering、error mapping、model mapping 和 health。
 
@@ -182,7 +202,7 @@ Rust 现在有 CCR server routing，但不是 cc-switch 那种 hot switch proxy 
 - error mapper
 - health endpoint 和 UI 状态
 
-### 7. Route Pool 高级能力
+### 8. Route Pool 高级能力
 
 Route Pool 已经覆盖 provider/model 排序、UI、server retry 和 circuit breaker 运行时状态。Phase 67 把 Router 页面改成左右双列表的 Route Pool 工作区：左侧是 available routes，右侧是 active pool 顺序。Phase 68 删除了旧 routing 兼容入口和导入路径。
 
@@ -195,7 +215,7 @@ Route Pool 已经覆盖 provider/model 排序、UI、server retry 和 circuit br
 - request queue state
 - 测速、health、Route Pool 的联动策略
 
-### 8. Usage、价格和统计
+### 9. Usage、价格和统计
 
 `cc-switch` 有 usage、价格、脚本统计和 dashboard 方向的实现。Rust 当前只有基础日志查看。
 
@@ -208,7 +228,7 @@ Route Pool 已经覆盖 provider/model 排序、UI、server retry 和 circuit br
 - 时间范围筛选
 - 导出统计
 
-### 9. 设置页剩余内容
+### 10. 设置页剩余内容
 
 Phase 49 已经完成完整设置页的主结构，但部分设置仍是轻量实现或占位。
 
@@ -224,7 +244,7 @@ Phase 49 已经完成完整设置页的主结构，但部分设置仍是轻量�
 - WebDAV settings
 - 更完整的 theme / appearance 细节
 
-### 10. 后期保留能力
+### 11. 后期保留能力
 
 这些能力在 cc-switch 中存在，但当前 Rust 版不应立即展开：
 
@@ -242,7 +262,7 @@ Phase 49 已经完成完整设置页的主结构，但部分设置仍是轻量�
 ### P0 / 近期
 
 - 明确 Claude/Codex 注入默认只写本地 CCR server endpoint
-- 把 provider kind 接入 server routing、endpoint test、transformer 推荐和 direct-to-provider 可选模式预览
+- Provider kind 已接入 server upstream 构建；仍需补齐 endpoint test、transformer 推荐、配置校验展示和 direct-to-provider 可选模式预览
 - 补齐 status 页面中 activate/start server 的可用性判断
 
 ### P1

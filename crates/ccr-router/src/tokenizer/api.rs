@@ -16,6 +16,7 @@ struct TokenizeResponse {
 pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
+        .no_proxy()
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
