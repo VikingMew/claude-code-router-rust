@@ -1,5 +1,9 @@
+use super::common::{
+    additive_client_snapshot, atomic_write, ccr_config, ccr_port, configured_path_from_settings,
+    first_route_pool_client_model, local_v1_base_url,
+};
+use crate::status::AdditiveClientSnapshot;
 use anyhow::{Context, Result};
-use ccr_config::{default_config_path, load_config};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,15 +11,10 @@ use std::path::{Path, PathBuf};
 const DEFAULT_MODEL: &str = "gpt-5-codex";
 
 pub fn openclaw_config_path() -> PathBuf {
-    configured_openclaw_path().unwrap_or_else(default_openclaw_config_path)
-}
-
-fn configured_openclaw_path() -> Option<PathBuf> {
-    load_config(&default_config_path())
-        .ok()
-        .and_then(|config| config.app_settings.openclaw_config_path)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    configured_path_from_settings(
+        |settings| settings.openclaw_config_path.clone(),
+        default_openclaw_config_path,
+    )
 }
 
 fn default_openclaw_config_path() -> PathBuf {
@@ -26,12 +25,9 @@ fn default_openclaw_config_path() -> PathBuf {
 }
 
 pub fn activate_openclaw_ccr() -> Result<()> {
-    let config = load_config(&default_config_path()).context("Failed to load CCR config")?;
-    let port = config.port.unwrap_or(3456);
-    let route = config
-        .first_route_pool_route()
-        .ok_or_else(|| anyhow::anyhow!("Route Pool is not configured or has no enabled routes"))?;
-    let model = client_model_from_route(route);
+    let config = ccr_config()?;
+    let port = ccr_port(&config);
+    let model = first_route_pool_client_model(&config, DEFAULT_MODEL)?;
     install_openclaw_ccr(&openclaw_config_path(), port, &model)
 }
 
@@ -47,6 +43,15 @@ pub fn openclaw_provider_exists() -> bool {
     openclaw_has_ccr_provider(&openclaw_config_path())
 }
 
+pub fn openclaw_snapshot(port: u16) -> AdditiveClientSnapshot {
+    additive_client_snapshot(
+        openclaw_config_path(),
+        port,
+        openclaw_points_to_ccr,
+        openclaw_has_ccr_provider,
+    )
+}
+
 pub fn openclaw_points_to_ccr(path: &Path, port: u16) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
@@ -60,10 +65,10 @@ pub fn openclaw_points_to_ccr(path: &Path, port: u16) -> bool {
         .and_then(|providers| providers.get("ccr"))
         .and_then(|ccr| ccr.get("baseUrl"))
         .and_then(Value::as_str)
-        == Some(format!("http://127.0.0.1:{port}/v1").as_str())
+        == Some(local_v1_base_url(port).as_str())
 }
 
-fn openclaw_has_ccr_provider(path: &Path) -> bool {
+pub(super) fn openclaw_has_ccr_provider(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
@@ -96,7 +101,7 @@ pub fn build_openclaw_config(original_json5: &str, port: u16, model: &str) -> Re
     ensure_nested_object_field(&mut config, &["models"], "providers")?;
 
     config["models"]["providers"]["ccr"] = json!({
-        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "baseUrl": local_v1_base_url(port),
         "apiKey": "any",
         "api": "openai-responses",
         "models": [
@@ -200,42 +205,14 @@ fn ensure_nested_object_field(config: &mut Value, path: &[&str], field: &str) ->
 }
 
 fn atomic_write_json(path: &Path, config: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create OpenClaw config directory")?;
-    }
-    let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(config)?)
-        .context("Failed to write temporary OpenClaw config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, path).context("Failed to install OpenClaw CCR provider")?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_secure_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-fn client_model_from_route(route: &str) -> String {
-    let route = route.trim();
-    if route.is_empty() {
-        return DEFAULT_MODEL.to_string();
-    }
-    route
-        .split_once(',')
-        .map(|(_, model)| model)
-        .unwrap_or(DEFAULT_MODEL)
-        .trim()
-        .to_string()
+    atomic_write(
+        path,
+        "json.tmp",
+        serde_json::to_string_pretty(config)?,
+        "Failed to create OpenClaw config directory",
+        "Failed to write temporary OpenClaw config",
+        "Failed to install OpenClaw CCR provider",
+    )
 }
 
 #[cfg(test)]
@@ -314,12 +291,5 @@ mod tests {
             config["agents"]["defaults"]["model"]["primary"].as_str(),
             Some("other/model")
         );
-    }
-
-    #[test]
-    fn client_model_uses_model_part_only() {
-        assert_eq!(client_model_from_route("openai,gpt-5-codex"), "gpt-5-codex");
-        assert_eq!(client_model_from_route("openai"), DEFAULT_MODEL);
-        assert_eq!(client_model_from_route(""), DEFAULT_MODEL);
     }
 }

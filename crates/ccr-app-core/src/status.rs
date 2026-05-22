@@ -10,6 +10,7 @@ use crate::client_config::opencode::{
     opencode_config_path, opencode_provider_exists, opencode_provider_present,
 };
 use crate::metrics::{RouteMetricSummary, TtftMetricSummary};
+use crate::official_provider::{OfficialCredentialStatus, official_statuses};
 use crate::runtime_status::{
     RoutePoolStatusResponse, fetch_route_pool_status, fetch_runtime_metrics_summary,
     fetch_ttft_metrics_summary,
@@ -132,6 +133,7 @@ pub struct StatusSnapshot {
     pub openclaw: AdditiveClientSnapshot,
     pub hermes: AdditiveClientSnapshot,
     pub route_pool: RoutePoolConfigSnapshot,
+    pub official_credentials: Vec<OfficialCredentialStatus>,
     pub api_key: Option<String>,
     pub server_auto_start: bool,
 }
@@ -224,6 +226,7 @@ pub fn read_status_snapshot_from_config(config: &Config) -> StatusSnapshot {
         openclaw: openclaw_snapshot(port),
         hermes: hermes_snapshot(port),
         route_pool: route_pool_config_snapshot(config),
+        official_credentials: official_statuses(),
         api_key: config.api_key.clone(),
         server_auto_start: config.app_settings.server_auto_start,
     }
