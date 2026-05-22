@@ -63,6 +63,7 @@ where
 {
     let client = reqwest::blocking::Client::builder()
         .timeout(STATUS_API_TIMEOUT)
+        .no_proxy()
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.get(url);

@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -14,8 +15,11 @@ struct TokenizeResponse {
 }
 
 pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+    if is_loopback_endpoint(endpoint) {
+        builder = builder.no_proxy();
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -46,4 +50,18 @@ pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, Strin
     debug!(count = result.token_count, "API tokenizer result");
 
     Ok(result.token_count)
+}
+
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|addr| addr.is_loopback())
+            .unwrap_or(false)
 }
