@@ -136,20 +136,23 @@ pub fn builtin_profiles() -> Vec<BuiltinProfile> {
             manifest: Manifest {
                 name: "Anthropic Official".to_string(),
                 version: "1.0.0".to_string(),
-                description: "Direct Anthropic Messages provider with Claude defaults.".to_string(),
+                description: "Official Anthropic Messages provider. CCR uses a safely detected logged-in Claude/Anthropic credential or CCR activation backup at request time; no secret is stored in this profile. Reference: https://platform.claude.com/docs/en/build-with-claude/working-with-messages".to_string(),
                 providers: vec![provider_value(Provider {
                     name: "anthropic".to_string(),
                     api_kind: Some(ProviderApiKind::AnthropicMessages),
                     api_kind_source: ProviderApiKindSource::Explicit,
                     api_base_url: "https://api.anthropic.com/v1/messages".to_string(),
-                    api_key: "$ANTHROPIC_API_KEY".to_string(),
-                    models: vec!["claude-sonnet-4".to_string(), "claude-opus-4".to_string()],
+                    api_key: "ccr-secret://official/anthropic".to_string(),
+                    models: vec![
+                        "claude-sonnet-4-20250514".to_string(),
+                        "claude-opus-4-20250514".to_string(),
+                    ],
                     endpoint_candidates: vec![],
                     transformer: transformer(&["anthropic"]),
                 })],
-                route_pool: Some(route_pool("anthropic,claude-sonnet-4")),
+                route_pool: Some(route_pool("anthropic,claude-sonnet-4-20250514")),
                 schema: vec![],
-                required_env: vec!["ANTHROPIC_API_KEY".to_string()],
+                required_env: vec![],
                 experimental: false,
             },
         },
@@ -158,25 +161,46 @@ pub fn builtin_profiles() -> Vec<BuiltinProfile> {
             manifest: Manifest {
                 name: "OpenAI / Codex Official".to_string(),
                 version: "1.0.0".to_string(),
-                description: "Direct OpenAI Responses provider with GPT/Codex defaults."
-                    .to_string(),
+                description: "Official OpenAI Responses provider for Codex. CCR uses a safely detected logged-in Codex/OpenAI credential or CCR activation backup at request time; no secret is stored in this profile. Default model verified 2026-05-22: gpt-5.3-codex (https://developers.openai.com/api/docs/models/gpt-5.3-codex).".to_string(),
                 providers: vec![provider_value(Provider {
                     name: "openai".to_string(),
                     api_kind: Some(ProviderApiKind::OpenAiResponses),
                     api_kind_source: ProviderApiKindSource::Explicit,
                     api_base_url: "https://api.openai.com/v1/responses".to_string(),
-                    api_key: "$OPENAI_API_KEY".to_string(),
+                    api_key: "ccr-secret://official/openai-codex".to_string(),
                     models: vec![
-                        "gpt-5-codex".to_string(),
+                        "gpt-5.3-codex".to_string(),
                         "gpt-5".to_string(),
                         "gpt-4.1".to_string(),
                     ],
                     endpoint_candidates: vec![],
                     transformer: transformer(&["openai"]),
                 })],
-                route_pool: Some(route_pool("openai,gpt-5-codex")),
+                route_pool: Some(route_pool("openai,gpt-5.3-codex")),
                 schema: vec![],
-                required_env: vec!["OPENAI_API_KEY".to_string()],
+                required_env: vec![],
+                experimental: false,
+            },
+        },
+        BuiltinProfile {
+            id: "github-copilot-official",
+            manifest: Manifest {
+                name: "GitHub Copilot Official".to_string(),
+                version: "1.0.0".to_string(),
+                description: "Official GitHub Copilot LLM Chat Completions endpoint. GitHub documents auth for Copilot agents via an agent-provided token; CCR has no stable official local Copilot token source to read, so this profile is visible but its Route Pool candidate is disabled until a supported secret source exists. Reference: https://docs.github.com/en/copilot/how-tos/use-copilot-extensions/build-a-copilot-agent/use-copilots-llm".to_string(),
+                providers: vec![provider_value(Provider {
+                    name: "github-copilot".to_string(),
+                    api_kind: Some(ProviderApiKind::OpenAiChat),
+                    api_kind_source: ProviderApiKindSource::Explicit,
+                    api_base_url: "https://api.githubcopilot.com/chat/completions".to_string(),
+                    api_key: "ccr-secret://official/github-copilot".to_string(),
+                    models: vec![],
+                    endpoint_candidates: vec![],
+                    transformer: transformer(&["openai"]),
+                })],
+                route_pool: Some(route_pool_candidate("github-copilot", false)),
+                schema: vec![],
+                required_env: vec![],
                 experimental: false,
             },
         },
@@ -194,14 +218,14 @@ pub fn builtin_profiles() -> Vec<BuiltinProfile> {
                     api_base_url: "https://api.openai.com/v1/responses".to_string(),
                     api_key: "$OPENAI_API_KEY".to_string(),
                     models: vec![
-                        "gpt-5-codex".to_string(),
+                        "gpt-5.3-codex".to_string(),
                         "gpt-5".to_string(),
                         "gpt-4.1".to_string(),
                     ],
                     endpoint_candidates: vec![],
                     transformer: transformer(&["openai"]),
                 })],
-                route_pool: Some(route_pool("openai,gpt-5-codex")),
+                route_pool: Some(route_pool("openai,gpt-5.3-codex")),
                 schema: vec![],
                 required_env: vec!["OPENAI_API_KEY".to_string()],
                 experimental: false,
@@ -253,13 +277,17 @@ fn transformer(names: &[&str]) -> TransformerConfig {
 }
 
 fn route_pool(route: &str) -> RoutePoolConfig {
+    route_pool_candidate(route, true)
+}
+
+fn route_pool_candidate(route: &str, enabled: bool) -> RoutePoolConfig {
     RoutePoolConfig {
         enabled: true,
         failure_threshold: 3,
         ban_seconds: 3600,
         candidates: vec![RoutePoolCandidate {
             route: route.to_string(),
-            enabled: true,
+            enabled,
             priority: 1,
         }],
     }
@@ -320,7 +348,7 @@ pub fn delete_preset(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccr_types::{Config, Provider, ProviderApiKindSource};
+    use ccr_types::{Config, Provider, ProviderApiKind, ProviderApiKindSource};
     use tempfile::TempDir;
 
     fn test_config() -> Config {
@@ -553,6 +581,7 @@ mod tests {
             vec![
                 "anthropic-official",
                 "openai-codex-official",
+                "github-copilot-official",
                 "claude-code-with-gpt",
                 "codex-with-sonnet"
             ]
@@ -562,22 +591,92 @@ mod tests {
                 .iter()
                 .all(|profile| profile.manifest.route_pool.is_some())
         );
-        assert!(
-            profiles
-                .iter()
-                .all(|profile| !profile.manifest.required_env.is_empty())
-        );
     }
 
     #[test]
-    fn builtin_profiles_use_explicit_provider_kind_and_env_placeholders() {
+    fn builtin_profiles_use_explicit_provider_kind() {
         for profile in builtin_profiles() {
             for value in &profile.manifest.providers {
                 let provider: Provider = serde_json::from_value(value.clone()).unwrap();
                 assert_eq!(provider.api_kind_source, ProviderApiKindSource::Explicit);
                 assert!(provider.api_kind.is_some());
-                assert!(provider.api_key.starts_with('$'));
             }
         }
+    }
+
+    #[test]
+    fn official_profiles_have_no_real_secret_and_route_pool_candidate() {
+        for id in [
+            "anthropic-official",
+            "openai-codex-official",
+            "github-copilot-official",
+        ] {
+            let profile = builtin_profile(id).unwrap();
+            assert!(profile.manifest.required_env.is_empty());
+            let provider: Provider =
+                serde_json::from_value(profile.manifest.providers[0].clone()).unwrap();
+            assert!(provider.api_key.starts_with("ccr-secret://official/"));
+            assert!(!provider.api_key.starts_with("sk-"));
+            assert_eq!(provider.api_kind_source, ProviderApiKindSource::Explicit);
+            assert!(provider.api_kind.is_some());
+            assert!(
+                profile
+                    .manifest
+                    .route_pool
+                    .as_ref()
+                    .is_some_and(|pool| !pool.candidates.is_empty())
+            );
+        }
+    }
+
+    #[test]
+    fn official_profiles_match_required_api_kinds_and_endpoints() {
+        let anthropic = builtin_profile("anthropic-official").unwrap();
+        let provider: Provider =
+            serde_json::from_value(anthropic.manifest.providers[0].clone()).unwrap();
+        assert_eq!(provider.api_kind, Some(ProviderApiKind::AnthropicMessages));
+        assert_eq!(
+            provider.api_base_url,
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            anthropic.manifest.route_pool.unwrap().candidates[0].route,
+            "anthropic,claude-sonnet-4-20250514"
+        );
+
+        let openai = builtin_profile("openai-codex-official").unwrap();
+        let provider: Provider =
+            serde_json::from_value(openai.manifest.providers[0].clone()).unwrap();
+        assert_eq!(provider.api_kind, Some(ProviderApiKind::OpenAiResponses));
+        assert_eq!(provider.api_base_url, "https://api.openai.com/v1/responses");
+        assert_eq!(provider.models[0], "gpt-5.3-codex");
+        assert!(
+            openai
+                .manifest
+                .description
+                .contains("https://developers.openai.com/api/docs/models/gpt-5.3-codex")
+        );
+        assert_eq!(
+            openai.manifest.route_pool.unwrap().candidates[0].route,
+            "openai,gpt-5.3-codex"
+        );
+
+        let copilot = builtin_profile("github-copilot-official").unwrap();
+        let provider: Provider =
+            serde_json::from_value(copilot.manifest.providers[0].clone()).unwrap();
+        assert_eq!(provider.api_kind, Some(ProviderApiKind::OpenAiChat));
+        assert_eq!(
+            provider.api_base_url,
+            "https://api.githubcopilot.com/chat/completions"
+        );
+        let candidate = &copilot.manifest.route_pool.unwrap().candidates[0];
+        assert_eq!(candidate.route, "github-copilot");
+        assert!(!candidate.enabled);
+        assert!(
+            copilot
+                .manifest
+                .description
+                .contains("no stable official local Copilot token source")
+        );
     }
 }

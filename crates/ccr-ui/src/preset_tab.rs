@@ -1,5 +1,7 @@
+use ccr_app_core::official_provider::official_status_for_provider;
 use ccr_config::{default_config_path, load_config, save_config};
 use ccr_preset::{builtin_profiles, delete_preset, install_preset_with_options, list_presets};
+use ccr_types::Provider;
 use eframe::egui;
 
 pub struct PresetTab {
@@ -107,6 +109,15 @@ impl PresetTab {
                     })
                     .unwrap_or_default();
                 ui.label(format!("Provider: {name} [{models}]"));
+                if let Ok(provider) = serde_json::from_value::<Provider>(provider.clone()) {
+                    if let Some(status) = official_status_for_provider(&provider) {
+                        ui.label(format!(
+                            "Official login: {} - {}",
+                            status.state.label(),
+                            status.detail
+                        ));
+                    }
+                }
             }
         }
     }

@@ -2,7 +2,7 @@
 
 **状态：** 长期设计文档  
 **范围：** 记录 CCR 支持的 provider API kind、client 入站协议、upstream body/header 转换和 client injection 边界  
-**最后验证：** 2026-05-17
+**最后验证：** 2026-05-22
 
 ## 产品边界
 
@@ -121,6 +121,22 @@ Endpoint test 是主动测速和配置验证。它应该按 provider API kind �
 - `anthropic_messages` 生成 Messages body。
 - `openai_chat` 生成 Chat Completions body。
 - `openai_responses` 生成 Responses body，顶层字段是 `input`。
+
+官方内置 provider/profile 使用 CCR secret resolver marker，而不是把真实
+Anthropic/OpenAI/Copilot secret 写入 preset/config。Endpoint test 和真实
+server upstream 请求使用同一套 resolver：
+
+- Anthropic Official: `https://api.anthropic.com/v1/messages`，使用
+  Anthropic Messages body 和 `x-api-key`/`anthropic-version` header。
+- OpenAI / Codex Official: `https://api.openai.com/v1/responses`，使用
+  Responses body 和 Bearer header。Codex 默认模型在 2026-05-22 按
+  `https://developers.openai.com/api/docs/models/gpt-5.3-codex` 校准为
+  `gpt-5.3-codex`。
+- GitHub Copilot Official: `https://api.githubcopilot.com/chat/completions`，
+  使用 OpenAI Chat-compatible body。GitHub 官方文档描述的认证来源是
+  Copilot agent 收到的 GitHub token；CCR 当前没有可安全读取的稳定本地
+  Copilot 登录 token 来源，所以内置 profile 可见但不会自动启用 Route Pool
+  candidate，也不实现 `copilot_internal/*`、IDE token 抓取或 header 仿冒。
 
 真实请求转换不能从 endpoint test 推断完成。Codex、Claude Code 和其他 client 的真实请求可能包含更复杂的 tool、reasoning、multi-modal、stream 和历史上下文字段。真实请求路径必须有独立单元测试和运行时日志。
 

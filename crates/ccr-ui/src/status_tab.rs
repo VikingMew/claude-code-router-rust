@@ -10,6 +10,7 @@ use ccr_app_core::status::{
 };
 use ccr_app_core::{
     metrics::{RouteMetricSummary, TtftMetricSummary},
+    official_provider::{OfficialCredentialState, OfficialCredentialStatus},
     runtime_status::RoutePoolStatusResponse,
 };
 use eframe::egui;
@@ -204,6 +205,10 @@ impl StatusTab {
         ui.separator();
         ui.add_space(8.0);
         self.show_routing(ui);
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+        self.show_official_credentials(ui);
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
@@ -521,6 +526,13 @@ impl StatusTab {
         });
     }
 
+    fn show_official_credentials(&self, ui: &mut egui::Ui) {
+        ui.heading("Official Provider Login");
+        for status in &self.snapshot().official_credentials {
+            show_official_credential_status(ui, status);
+        }
+    }
+
     fn show_claude(&mut self, ui: &mut egui::Ui) {
         ui.heading("Claude Config Switch");
 
@@ -786,6 +798,21 @@ fn show_additive_client_snapshot(ui: &mut egui::Ui, snapshot: &AdditiveClientSna
             ui.label(format!("Config path: {path}"));
         }
     }
+}
+
+fn show_official_credential_status(ui: &mut egui::Ui, status: &OfficialCredentialStatus) {
+    ui.horizontal_wrapped(|ui| {
+        let color = match status.state {
+            OfficialCredentialState::Available => egui::Color32::GREEN,
+            OfficialCredentialState::AvailableFromCcrBackup => egui::Color32::YELLOW,
+            OfficialCredentialState::Missing | OfficialCredentialState::UnsupportedSafeRead => {
+                egui::Color32::LIGHT_RED
+            }
+        };
+        ui.label(status.kind.label());
+        ui.colored_label(color, status.state.label());
+        ui.label(&status.detail);
+    });
 }
 
 fn show_status_message(ui: &mut egui::Ui, message: &str) {

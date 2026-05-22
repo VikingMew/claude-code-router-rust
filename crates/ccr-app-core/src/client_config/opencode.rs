@@ -1,5 +1,9 @@
+use super::common::{
+    additive_client_snapshot, atomic_write, ccr_config, ccr_port, configured_path_from_settings,
+    first_route_pool_client_model, local_v1_base_url,
+};
+use crate::status::AdditiveClientSnapshot;
 use anyhow::{Context, Result};
-use ccr_config::{default_config_path, load_config};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,15 +12,10 @@ const OPENCODE_SCHEMA: &str = "https://opencode.ai/config.json";
 const DEFAULT_MODEL: &str = "gpt-5-codex";
 
 pub fn opencode_config_path() -> PathBuf {
-    configured_opencode_path().unwrap_or_else(default_opencode_config_path)
-}
-
-fn configured_opencode_path() -> Option<PathBuf> {
-    load_config(&default_config_path())
-        .ok()
-        .and_then(|config| config.app_settings.opencode_config_path)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    configured_path_from_settings(
+        |settings| settings.opencode_config_path.clone(),
+        default_opencode_config_path,
+    )
 }
 
 fn default_opencode_config_path() -> PathBuf {
@@ -28,12 +27,9 @@ fn default_opencode_config_path() -> PathBuf {
 }
 
 pub fn activate_opencode_ccr() -> Result<()> {
-    let config = load_config(&default_config_path()).context("Failed to load CCR config")?;
-    let port = config.port.unwrap_or(3456);
-    let route = config
-        .first_route_pool_route()
-        .ok_or_else(|| anyhow::anyhow!("Route Pool is not configured or has no enabled routes"))?;
-    let model = client_model_from_route(route);
+    let config = ccr_config()?;
+    let port = ccr_port(&config);
+    let model = first_route_pool_client_model(&config, DEFAULT_MODEL)?;
     install_opencode_ccr(&opencode_config_path(), port, &model)
 }
 
@@ -49,6 +45,15 @@ pub fn opencode_provider_exists() -> bool {
     opencode_has_ccr_provider(&opencode_config_path())
 }
 
+pub fn opencode_snapshot(port: u16) -> AdditiveClientSnapshot {
+    additive_client_snapshot(
+        opencode_config_path(),
+        port,
+        opencode_points_to_ccr,
+        opencode_has_ccr_provider,
+    )
+}
+
 pub fn opencode_points_to_ccr(path: &Path, port: u16) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
@@ -62,10 +67,10 @@ pub fn opencode_points_to_ccr(path: &Path, port: u16) -> bool {
         .and_then(|ccr| ccr.get("options"))
         .and_then(|options| options.get("baseURL"))
         .and_then(Value::as_str)
-        == Some(format!("http://127.0.0.1:{port}/v1").as_str())
+        == Some(local_v1_base_url(port).as_str())
 }
 
-fn opencode_has_ccr_provider(path: &Path) -> bool {
+pub(super) fn opencode_has_ccr_provider(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
@@ -101,7 +106,7 @@ pub fn build_opencode_config(original_json: &str, port: u16, model: &str) -> Res
         "npm": "@ai-sdk/openai-compatible",
         "name": "CCR",
         "options": {
-            "baseURL": format!("http://127.0.0.1:{port}/v1"),
+            "baseURL": local_v1_base_url(port),
             "apiKey": "any"
         },
         "models": {
@@ -145,42 +150,14 @@ fn ensure_object_field(config: &mut Value, field: &str) -> Result<()> {
 }
 
 fn atomic_write_json(path: &Path, config: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create OpenCode config directory")?;
-    }
-    let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(config)?)
-        .context("Failed to write temporary OpenCode config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, path).context("Failed to install OpenCode CCR provider")?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_secure_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-fn client_model_from_route(route: &str) -> String {
-    let route = route.trim();
-    if route.is_empty() {
-        return DEFAULT_MODEL.to_string();
-    }
-    route
-        .split_once(',')
-        .map(|split| split.1)
-        .unwrap_or(DEFAULT_MODEL)
-        .trim()
-        .to_string()
+    atomic_write(
+        path,
+        "json.tmp",
+        serde_json::to_string_pretty(config)?,
+        "Failed to create OpenCode config directory",
+        "Failed to write temporary OpenCode config",
+        "Failed to install OpenCode CCR provider",
+    )
 }
 
 #[cfg(test)]
@@ -231,12 +208,5 @@ mod tests {
         let config = remove_opencode_ccr_provider(original).unwrap();
         assert!(config["provider"]["ccr"].is_null());
         assert_eq!(config["provider"]["other"]["name"].as_str(), Some("Other"));
-    }
-
-    #[test]
-    fn client_model_uses_model_part_only() {
-        assert_eq!(client_model_from_route("openai,gpt-5-codex"), "gpt-5-codex");
-        assert_eq!(client_model_from_route("openai"), DEFAULT_MODEL);
-        assert_eq!(client_model_from_route(""), DEFAULT_MODEL);
     }
 }
