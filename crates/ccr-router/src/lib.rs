@@ -36,30 +36,15 @@ fn count_tokens_hf(text: &str) -> usize {
 
 /// Synchronous token counting for local backends and non-async callers.
 ///
-/// If the API tokenizer is requested while already inside a Tokio runtime, this
-/// uses the tiktoken fallback instead of creating a nested runtime.
+/// API tokenizer requests require async HTTP, so this sync helper deliberately
+/// falls back to tiktoken instead of creating or blocking on a Tokio runtime.
 pub fn count_tokens(req: &MessagesRequest, backend: &TokenizerBackend) -> usize {
     let count = |text: &str| match backend {
         TokenizerBackend::Tiktoken => count_tokens_tiktoken(text),
         TokenizerBackend::Huggingface => count_tokens_hf(text),
-        TokenizerBackend::Api { endpoint } => {
-            // Check cache first
-            if let Some(cached) = TOKEN_CACHE.get(text) {
-                return cached;
-            }
-
-            if tokio::runtime::Handle::try_current().is_ok() {
-                warn!(
-                    "API tokenizer requested from sync token counter inside an async runtime; falling back to tiktoken"
-                );
-                let count = count_tokens_tiktoken(text);
-                TOKEN_CACHE.set(text, count);
-                return count;
-            }
-
-            let rt = tokio::runtime::Runtime::new()
-                .expect("failed to create Tokio runtime for sync API tokenizer call");
-            rt.block_on(count_tokens_api_with_fallback(text, endpoint))
+        TokenizerBackend::Api { .. } => {
+            warn!("API tokenizer requested from sync token counter; falling back to tiktoken");
+            count_tokens_tiktoken(text)
         }
     };
     count_tokens_with(req, count)
@@ -125,6 +110,42 @@ pub fn model_name(model_str: &str) -> &str {
 mod tests {
     use super::*;
     use ccr_types::MessagesRequest;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn spawn_tokenizer_server(token_count: usize) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind tokenizer test server");
+        let addr = listener.local_addr().expect("tokenizer test server addr");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_thread = calls.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                calls_for_thread.fetch_add(1, Ordering::SeqCst);
+
+                let mut buf = [0; 1024];
+                let _ = stream.read(&mut buf);
+
+                let body = format!(r#"{{"token_count":{}}}"#, token_count);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        (format!("http://{addr}/tokenize"), calls)
+    }
 
     fn base_req() -> MessagesRequest {
         MessagesRequest {
@@ -187,7 +208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn count_tokens_async_api_falls_back_to_tiktoken() {
+    async fn tokenizer_count_tokens_async_api_falls_back_to_tiktoken() {
         use ccr_types::{Message, TokenizerBackend};
         let mut req = base_req();
         req.messages = vec![Message {
@@ -208,12 +229,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_count_tokens_api_inside_runtime_uses_local_fallback() {
+    async fn tokenizer_count_tokens_async_api_uses_http_and_caches_result() {
+        use ccr_types::{Message, TokenizerBackend};
+        let (endpoint, calls) = spawn_tokenizer_server(123);
+        let mut req = base_req();
+        req.messages = vec![Message {
+            role: "user".into(),
+            content: serde_json::json!("api async success cache unique"),
+        }];
+        let backend = TokenizerBackend::Api { endpoint };
+
+        let first = count_tokens_async(&req, &backend).await;
+        let second = count_tokens_async(&req, &backend).await;
+
+        assert_eq!(first, 123);
+        assert_eq!(second, 123);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn tokenizer_sync_count_tokens_api_uses_local_fallback_without_runtime() {
         use ccr_types::{Message, TokenizerBackend};
         let mut req = base_req();
         req.messages = vec![Message {
             role: "user".into(),
-            content: serde_json::json!("sync api fallback inside runtime unique"),
+            content: serde_json::json!("sync api fallback outside runtime unique"),
         }];
 
         let expected = count_tokens(&req, &TokenizerBackend::Tiktoken);

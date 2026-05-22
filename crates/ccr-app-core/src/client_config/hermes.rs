@@ -1,5 +1,9 @@
+use super::common::{
+    additive_client_snapshot, atomic_write, ccr_config, ccr_port, configured_path_from_settings,
+    configured_path_or_default, first_route_pool_client_model, local_v1_base_url,
+};
+use crate::status::AdditiveClientSnapshot;
 use anyhow::{Context, Result};
-use ccr_config::{default_config_path, load_config};
 use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,22 +13,14 @@ const CCR_MODEL_PROVIDER: &str = "custom:ccr";
 const DEFAULT_MODEL: &str = "gpt-5-codex";
 
 pub fn hermes_config_path() -> PathBuf {
-    configured_hermes_path().unwrap_or_else(default_hermes_config_path)
+    configured_path_from_settings(
+        |settings| settings.hermes_config_path.clone(),
+        default_hermes_config_path,
+    )
 }
 
 pub fn hermes_config_path_from_option(configured_path: Option<String>) -> PathBuf {
-    configured_path
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(default_hermes_config_path)
-}
-
-fn configured_hermes_path() -> Option<PathBuf> {
-    load_config(&default_config_path())
-        .ok()
-        .and_then(|config| config.app_settings.hermes_config_path)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    configured_path_or_default(configured_path, default_hermes_config_path)
 }
 
 pub fn default_hermes_config_path() -> PathBuf {
@@ -35,12 +31,9 @@ pub fn default_hermes_config_path() -> PathBuf {
 }
 
 pub fn activate_hermes_ccr() -> Result<()> {
-    let config = load_config(&default_config_path()).context("Failed to load CCR config")?;
-    let port = config.port.unwrap_or(3456);
-    let route = config
-        .first_route_pool_route()
-        .ok_or_else(|| anyhow::anyhow!("Route Pool is not configured or has no enabled routes"))?;
-    let model = client_model_from_route(route);
+    let config = ccr_config()?;
+    let port = ccr_port(&config);
+    let model = first_route_pool_client_model(&config, DEFAULT_MODEL)?;
     install_hermes_ccr(&hermes_config_path(), port, &model)
 }
 
@@ -56,6 +49,15 @@ pub fn hermes_provider_exists() -> bool {
     hermes_has_ccr_provider(&hermes_config_path())
 }
 
+pub fn hermes_snapshot(port: u16) -> AdditiveClientSnapshot {
+    additive_client_snapshot(
+        hermes_config_path(),
+        port,
+        hermes_points_to_ccr,
+        hermes_has_ccr_provider,
+    )
+}
+
 pub fn hermes_points_to_ccr(path: &Path, port: u16) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
@@ -66,10 +68,10 @@ pub fn hermes_points_to_ccr(path: &Path, port: u16) -> bool {
     ccr_provider(&config)
         .and_then(|provider| provider.get(Value::String("base_url".to_string())))
         .and_then(Value::as_str)
-        == Some(format!("http://127.0.0.1:{port}/v1").as_str())
+        == Some(local_v1_base_url(port).as_str())
 }
 
-fn hermes_has_ccr_provider(path: &Path) -> bool {
+pub(super) fn hermes_has_ccr_provider(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
@@ -177,7 +179,7 @@ fn ccr_provider_mapping(port: u16) -> Mapping {
     );
     provider.insert(
         Value::String("base_url".to_string()),
-        Value::String(format!("http://127.0.0.1:{port}/v1")),
+        Value::String(local_v1_base_url(port)),
     );
     provider.insert(
         Value::String("api_mode".to_string()),
@@ -214,41 +216,14 @@ fn provider_name(provider: &Value) -> Option<&str> {
 }
 
 fn atomic_write_yaml(path: &Path, config: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create Hermes config directory")?;
-    }
-    let temp_path = path.with_extension("yaml.tmp");
-    fs::write(&temp_path, serde_yaml::to_string(config)?)
-        .context("Failed to write temporary Hermes config")?;
-    set_secure_permissions(&temp_path)?;
-    fs::rename(&temp_path, path).context("Failed to install Hermes CCR provider")?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_secure_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-fn client_model_from_route(route: &str) -> String {
-    let route = route.trim();
-    if route.is_empty() {
-        return DEFAULT_MODEL.to_string();
-    }
-    let model = route.split_once(',').map(|(_, model)| model.trim());
-    match model {
-        Some(model) if !model.is_empty() => model.to_string(),
-        _ => DEFAULT_MODEL.to_string(),
-    }
+    atomic_write(
+        path,
+        "yaml.tmp",
+        serde_yaml::to_string(config)?,
+        "Failed to create Hermes config directory",
+        "Failed to write temporary Hermes config",
+        "Failed to install Hermes CCR provider",
+    )
 }
 
 #[cfg(test)]
@@ -397,17 +372,6 @@ model:
         assert!(config["custom_providers"].as_sequence().unwrap().is_empty());
         assert_eq!(config["model"]["provider"].as_str(), Some("custom:other"));
         assert_eq!(config["model"]["default"].as_str(), Some("other-model"));
-    }
-
-    #[test]
-    fn client_model_uses_model_part_only() {
-        assert_eq!(client_model_from_route("openai,gpt-5-codex"), "gpt-5-codex");
-        assert_eq!(
-            client_model_from_route("anthropic,claude-sonnet-4-6"),
-            "claude-sonnet-4-6"
-        );
-        assert_eq!(client_model_from_route("openai"), DEFAULT_MODEL);
-        assert_eq!(client_model_from_route("openai,"), DEFAULT_MODEL);
     }
 
     #[test]
