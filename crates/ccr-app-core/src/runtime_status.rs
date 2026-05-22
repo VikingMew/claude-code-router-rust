@@ -122,6 +122,7 @@ where
 {
     let client = reqwest::blocking::Client::builder()
         .timeout(STATUS_API_TIMEOUT)
+        .no_proxy()
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.get(url);
@@ -148,6 +149,7 @@ where
 {
     let client = reqwest::blocking::Client::builder()
         .timeout(STATUS_API_TIMEOUT)
+        .no_proxy()
         .build()
         .map_err(|error| error.to_string())?;
     let mut request = client.post(url).json(body);
@@ -195,24 +197,54 @@ mod tests {
     }
 
     fn read_request(stream: &mut TcpStream) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("set read timeout");
+        stream.set_nonblocking(true).expect("set nonblocking");
         let mut buffer = [0; 2048];
         let mut request = Vec::new();
+        let mut header_end = None;
+        let mut expected_len = None;
+        let started = std::time::Instant::now();
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(size) => request.extend_from_slice(&buffer[..size]),
+                Ok(size) => {
+                    request.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|position| position + 4);
+                        if let Some(header_end) = header_end {
+                            expected_len = Some(
+                                header_end + content_length(&request[..header_end]).unwrap_or(0),
+                            );
+                        }
+                    }
+                    if expected_len.is_some_and(|len| request.len() >= len) {
+                        break;
+                    }
+                }
                 Err(error)
                     if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
                 {
-                    break;
+                    if expected_len.is_some() || started.elapsed() >= Duration::from_millis(100) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
                 }
                 Err(error) => panic!("read request: {error}"),
             }
         }
         String::from_utf8_lossy(&request).into_owned()
+    }
+
+    fn content_length(headers: &[u8]) -> Option<usize> {
+        let headers = String::from_utf8_lossy(headers);
+        headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })
     }
 
     #[test]

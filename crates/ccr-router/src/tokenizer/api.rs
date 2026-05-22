@@ -14,8 +14,11 @@ struct TokenizeResponse {
 }
 
 pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+    if endpoint_uses_loopback(endpoint) {
+        builder = builder.no_proxy();
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -46,4 +49,15 @@ pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, Strin
     debug!(count = result.token_count, "API tokenizer result");
 
     Ok(result.token_count)
+}
+
+fn endpoint_uses_loopback(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(is_loopback_host))
+        .unwrap_or(false)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }

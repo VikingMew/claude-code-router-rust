@@ -2116,7 +2116,43 @@ mod tests {
     use super::*;
     use actix_web::body::to_bytes;
     use ccr_types::{Message, RoutePoolCandidate, RoutePoolConfig, TokenizerBackend};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn spawn_tokenizer_server(token_count: usize) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind tokenizer test server");
+        let addr = listener.local_addr().expect("tokenizer test server addr");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_thread = calls.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                calls_for_thread.fetch_add(1, Ordering::SeqCst);
+
+                let mut buf = [0; 1024];
+                let _ = stream.read(&mut buf);
+
+                let body = format!(r#"{{"token_count":{}}}"#, token_count);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        (format!("http://{addr}/tokenize"), calls)
+    }
 
     fn pool_config() -> Config {
         Config {
@@ -2183,6 +2219,41 @@ mod tests {
         let body = to_bytes(resp.into_body()).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["input_tokens"].as_u64(), Some(expected as u64));
+    }
+
+    #[actix_web::test]
+    async fn count_tokens_handler_uses_async_api_tokenizer_success() {
+        let (endpoint, calls) = spawn_tokenizer_server(77);
+        let mut config = Config {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        config.router.tokenizer_backend = TokenizerBackend::Api { endpoint };
+        let state = web::Data::new(test_state(config));
+        let msg_req = MessagesRequest {
+            model: "claude-3-5-sonnet".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: serde_json::json!("server handler async api success unique"),
+            }],
+            system: None,
+            tools: None,
+            max_tokens: Some(100),
+            stream: false,
+            thinking: None,
+        };
+        let req = actix_web::test::TestRequest::post()
+            .insert_header(("authorization", "Bearer test-key"))
+            .to_http_request();
+        let body = web::Bytes::from(serde_json::to_vec(&msg_req).unwrap());
+
+        let resp = count_tokens_handler(req, body, state).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let body = to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["input_tokens"].as_u64(), Some(77));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

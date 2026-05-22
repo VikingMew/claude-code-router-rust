@@ -1,7 +1,7 @@
 # Original CCR Feature Gap Analysis
 
 **状态：** 长期跟踪文档  
-**最后更新：** Phase 68 后  
+**最后验证：** 2026-05-22
 **范围：** 记录原版 JS/TS `claude-code-router` 支持、但当前 `ccr-rust` 未支持或未完整支持的能力  
 **用途：** 和 `cc-switch-feature-gap-analysis.md` 分开维护，避免把原版 CCR 缺口和 cc-switch 缺口混在一起
 
@@ -23,7 +23,7 @@ Gemini 相关能力不进入当前 Rust 产品目标。原版 CCR 中与 Gemini 
 - Image agent 基础能力
 - Config load/save、环境变量插值、JSON5、备份
 - Admin reload/config 相关基础接口
-- Server lifecycle、client activate/deactivate、model/statusline/UI 打开等基础能力
+- Server lifecycle、client activate/deactivate、preset/statusline 等基础 CLI 辅助能力；当前 CLI 命令面为 `start`、`stop`、`restart`、`status`、`claude-activate`、`claude-deactivate`、`codex-activate`、`codex-deactivate`、`preset`、`statusline`、`help`
 - Claude / Codex activate/deactivate
 - Preset 基础 export/list/info/delete/load/install library 能力
 - Desktop UI：status、config、settings、logs、presets、transformers、token counter、endpoint test
@@ -44,7 +44,7 @@ Gemini 相关能力不进入当前 Rust 产品目标。原版 CCR 中与 Gemini 
 | Config schema | 原版 README 的完整字段和环境变量 | Rust 有核心字段，已加入 Claude Code model mapping，仍有部分缺口 | 长期补齐 |
 | Web UI parity | React web 管理界面 | Rust desktop UI，功能形态不同 | 以桌面 UI 为准 |
 | Server API parity | 原版 server API、preset API、UI API | Rust 有基础 API | 按 UI 需要补齐 |
-| Responses/Anthropic 转换 | 原版通过 transformer 生态处理 | Rust 已有最小 Responses -> target provider 转换；复杂 tool/reasoning/multimodal 映射仍缺 | 继续补齐 |
+| Responses/Anthropic 转换 | 原版通过 transformer 生态处理 | Rust 已有最小 provider API kind 协议矩阵、Responses reasoning 降级策略、非流式 tool request 映射、image multimodal 映射、stateful 字段保留/拒绝策略和不兼容跨协议 streaming gate；完整 stream event schema、streaming tool delta 和更细 provider-specific multimodal 边界仍缺 | 继续补齐 |
 | Non-interactive / CI | 原版支持 CI 环境变量和非交互 | Rust 不完整 | 后置 |
 | Logs | pino server logs + app logs | Rust 基础日志查看 | 继续补查询/下载 |
 | Statusline | 原版 statusline 配置更完整 | Rust 有基础 statusline | 后置补齐 |
@@ -104,7 +104,7 @@ Rust 已经移植多个常用 transformer，但不是原版 `@musistudio/llms` �
 
 ### 4. 原版 CLI 背后的能力仍需核对
 
-Rust CLI 已经有 start/stop/restart/status/env/model/statusline/ui 和 Claude/Codex activate/deactivate，但原版 CCR 的 CLI 参数和命令形态不作为 Rust 版兼容目标。
+Rust CLI 当前只暴露 `start`、`stop`、`restart`、`status`、`claude-activate`、`claude-deactivate`、`codex-activate`、`codex-deactivate`、`preset`、`statusline` 和 `help`。`env`、`model`、`ui` 不属于当前 CLI 命令面。原版 CCR 的 CLI 参数和命令形态不作为 Rust 版兼容目标；本文只按背后的产品能力继续核对。
 
 仍需按能力核对：
 
@@ -163,15 +163,21 @@ Rust 已有 `AppSettings.log_level`、proxy、Route Pool、auto launch 等字段
 
 ### 8. Responses 到 Anthropic Messages 的转换可靠性
 
-Rust 已经有 Codex `/v1/responses` 入口、provider API kind 和最小 Responses -> target provider 转换，但“Codex 使用 Claude Sonnet”仍需要继续补齐复杂 Responses 语义：
+Rust 已经有 Codex `/v1/responses` 入口、provider API kind aware upstream builder 和一组最小可靠 Responses 映射能力：
 
-- system/developer/user message
-- tool call
-- tool result
-- reasoning 参数
-- stream event mapping
-- error mapping
-- max token / sampling 参数
+- Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种 provider API kind 的基础 body/header 转换矩阵。
+- Responses `reasoning` 字段发往 OpenAI Responses upstream 时保留，发往非 Responses provider 时不透传非法 Responses-only 字段。
+- 非流式 request body 的基础 tool request 映射，包括 Anthropic `tool_use` 到 OpenAI Chat `tool_calls` 的方向。
+- text/image content 的有限 multimodal 映射，不支持的 content type 返回明确错误。
+- Responses stateful 字段发往 Responses upstream 时保留；state-only 请求发往非 Responses provider 时明确拒绝。
+- 不兼容跨协议 streaming 当前被 gate 拒绝，避免把错误 SSE schema 直接透传。
+
+“Codex 使用 Claude Sonnet”仍需要继续补齐的真实边界：
+
+- 完整跨协议 stream event schema 转换。
+- streaming tool delta 的跨协议转换。
+- 更细 provider-specific multimodal 能力和限制表达。
+- tool result、error、max token / sampling 等字段的更多协议边界测试。
 
 这部分需要专门测试，不应只靠 UI 能写配置来判断完成。
 
@@ -200,8 +206,8 @@ Rust 已经有 Codex `/v1/responses` 入口、provider API kind 和最小 Respon
 ### P0 / 近期
 
 - Phase 45 默认配置 profiles，复用 preset 模型
-- Codex Responses 到 Anthropic Messages 的协议测试
-- Provider API kind 接入 server upstream、endpoint test、transformer 推荐和 direct-to-provider 可选模式预览；默认 client injection 仍只指向本地 CCR server
+- Codex Responses 到 Anthropic Messages 的剩余协议边界测试，重点是完整 stream event schema、streaming tool delta、provider-specific multimodal 和 tool result/error 参数边界
+- Provider API kind 已接入 server upstream 基础构建；仍需补齐 endpoint test、transformer 推荐和 direct-to-provider 可选模式预览；默认 client injection 仍只指向本地 CCR server
 - Preset install 的 UI/core 最小闭环
 
 ### P1
