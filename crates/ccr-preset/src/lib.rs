@@ -330,12 +330,11 @@ pub fn list_presets() -> Result<Vec<Manifest>> {
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let manifest_path = entry.path().join("manifest.json");
-        if manifest_path.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-                if let Ok(m) = serde_json::from_str::<Manifest>(&raw) {
-                    out.push(m);
-                }
-            }
+        if manifest_path.exists()
+            && let Ok(raw) = std::fs::read_to_string(&manifest_path)
+            && let Ok(m) = serde_json::from_str::<Manifest>(&raw)
+        {
+            out.push(m);
         }
     }
     Ok(out)

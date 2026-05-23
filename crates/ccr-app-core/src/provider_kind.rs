@@ -119,9 +119,11 @@ pub fn infer_provider_api_kind(provider: &Provider) -> ProviderApiKind {
         ProviderApiKind::OpenAiResponses
     } else if url.contains("/chat/completions") {
         ProviderApiKind::OpenAiChat
-    } else if url.contains("/v1/messages") || url.contains("/anthropic") {
-        ProviderApiKind::AnthropicMessages
-    } else if name.contains("anthropic") || name.contains("claude") {
+    } else if url.contains("/v1/messages")
+        || url.contains("/anthropic")
+        || name.contains("anthropic")
+        || name.contains("claude")
+    {
         ProviderApiKind::AnthropicMessages
     } else {
         ProviderApiKind::Custom

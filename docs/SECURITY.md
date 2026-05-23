@@ -78,5 +78,4 @@ Current known follow-up areas:
 - Add structured redaction tests for future JSONL logs.
 - Review packaging scripts for install/uninstall path safety.
 - Before widening Windows releases, record an actual Windows `icacls` or
-  PowerShell `Get-Acl` audit for Claude config ACLs; the code-level debt is
-  tracked as resolved in `docs/exec-plans/tech-debt-tracker.md#plan-007---windows-claude-config-acl-加固`.
+  PowerShell `Get-Acl` audit for Claude config ACLs.

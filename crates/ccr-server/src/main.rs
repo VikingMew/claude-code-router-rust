@@ -20,7 +20,9 @@ use handlers::{
 };
 use runtime::metrics::{record_pending_attempt_ttft, stream_response_with_ttft};
 use runtime::responses_stream::stream_anthropic_as_responses_with_ttft;
-use runtime::route_pool::{RoutePoolRouteState, route_pool_routes_for_log, send_with_route_pool};
+use runtime::route_pool::{
+    RoutePoolRouteState, RoutePoolRuntime, route_pool_routes_for_log, send_with_route_pool,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -276,11 +278,13 @@ async fn messages(
     let body_json: serde_json::Value = serde_json::to_value(&msg_req).unwrap();
 
     let mut upstream_res = match send_with_route_pool(
-        &state.client,
-        &config,
-        &state.transformers,
-        &state.route_pool_state,
-        &state.metrics,
+        RoutePoolRuntime {
+            client: &state.client,
+            config: &config,
+            transformers: &state.transformers,
+            route_pool_state: &state.route_pool_state,
+            metrics: &state.metrics,
+        },
         InboundProtocol::AnthropicMessages,
         &model_str,
         body_json,
@@ -383,11 +387,13 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
     );
 
     let mut upstream_res = match send_with_route_pool(
-        &state.client,
-        &config,
-        &state.transformers,
-        &state.route_pool_state,
-        &state.metrics,
+        RoutePoolRuntime {
+            client: &state.client,
+            config: &config,
+            transformers: &state.transformers,
+            route_pool_state: &state.route_pool_state,
+            metrics: &state.metrics,
+        },
         InboundProtocol::OpenAiResponses,
         &model_str,
         body_json,

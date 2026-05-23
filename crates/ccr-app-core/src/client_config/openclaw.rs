@@ -146,14 +146,12 @@ pub fn remove_openclaw_ccr_provider(original_json5: &str) -> Result<Value> {
         .and_then(|agents| agents.get_mut("defaults"))
         .and_then(|defaults| defaults.get_mut("model"))
         .and_then(Value::as_object_mut)
-    {
-        if default_model
+        && default_model
             .get("primary")
             .and_then(Value::as_str)
             .is_some_and(|primary| primary.starts_with("ccr/"))
-        {
-            default_model.remove("primary");
-        }
+    {
+        default_model.remove("primary");
     }
     Ok(config)
 }

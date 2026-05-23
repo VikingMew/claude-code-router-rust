@@ -282,7 +282,7 @@ fn available_route_pool_routes(config: &ccr_types::Config) -> Vec<String> {
         .unwrap_or_default();
     route_pool_routes(config)
         .into_iter()
-        .filter(|route| !active_routes.iter().any(|active| *active == route.as_str()))
+        .filter(|route| !active_routes.contains(&route.as_str()))
         .collect()
 }
 
@@ -317,6 +317,23 @@ fn route_config_warning(state: &SettingsState, route: &str) -> Option<&'static s
         }
     }
     None
+}
+
+impl Default for RouterTab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn show_message(ui: &mut egui::Ui, message: &str) {
+    if message.is_empty() {
+        return;
+    }
+    if message.starts_with("Error") {
+        ui.colored_label(egui::Color32::RED, message);
+    } else {
+        ui.colored_label(egui::Color32::GREEN, message);
+    }
 }
 
 #[cfg(test)]
@@ -403,22 +420,5 @@ mod tests {
             available_route_pool_routes(&config),
             vec!["openai".to_string(), "openai,gpt-5-mini".to_string()]
         );
-    }
-}
-
-impl Default for RouterTab {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn show_message(ui: &mut egui::Ui, message: &str) {
-    if message.is_empty() {
-        return;
-    }
-    if message.starts_with("Error") {
-        ui.colored_label(egui::Color32::RED, message);
-    } else {
-        ui.colored_label(egui::Color32::GREEN, message);
     }
 }

@@ -113,9 +113,9 @@ impl StatusTab {
         let exe_path = ccr_server_executable();
         self.spawn_task(move || {
             let snapshot = read_status_snapshot();
-            let message = if !snapshot.server_auto_start {
-                String::new()
-            } else if matches!(snapshot.server, ServerSnapshot::Running { .. }) {
+            let message = if !snapshot.server_auto_start
+                || matches!(snapshot.server, ServerSnapshot::Running { .. })
+            {
                 String::new()
             } else {
                 match exe_path {
@@ -842,7 +842,7 @@ fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) 
     }
 
     let mut routes = status.routes.iter().collect::<Vec<_>>();
-    routes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    routes.sort_by_key(|(route, _)| *route);
     for (route, state) in routes {
         ui.horizontal_wrapped(|ui| {
             let banned = state.banned_until_epoch_secs.is_some();

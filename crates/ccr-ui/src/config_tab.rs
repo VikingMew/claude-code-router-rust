@@ -292,30 +292,6 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ccr_types::AppSettings;
-
-    #[test]
-    fn running_server_reload_is_disabled_by_default() {
-        assert!(!can_reload_running_server(&Config::default()));
-    }
-
-    #[test]
-    fn running_server_reload_requires_explicit_admin_api_enablement() {
-        let config = Config {
-            app_settings: AppSettings {
-                admin_api_enabled: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        assert!(can_reload_running_server(&config));
-    }
-}
-
 fn show_status_message(ui: &mut egui::Ui, message: &str) {
     if message.is_empty() {
         return;
@@ -377,5 +353,29 @@ fn show_provider_kind_choice(ui: &mut egui::Ui, provider: &mut Provider) {
             "Recommended transformers: {}",
             defaults.recommended_transformers.join(", ")
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ccr_types::AppSettings;
+
+    #[test]
+    fn running_server_reload_is_disabled_by_default() {
+        assert!(!can_reload_running_server(&Config::default()));
+    }
+
+    #[test]
+    fn running_server_reload_requires_explicit_admin_api_enablement() {
+        let config = Config {
+            app_settings: AppSettings {
+                admin_api_enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(can_reload_running_server(&config));
     }
 }

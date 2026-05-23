@@ -303,10 +303,10 @@ fn hermes_snapshot(port: u16) -> AdditiveClientSnapshot {
 
 pub fn start_server(exe_path: &Path) -> Result<ServerOperation> {
     let pid_path = pid_file_path();
-    if let Some(pid) = read_pid(&pid_path) {
-        if is_process_alive(pid) {
-            return Ok(ServerOperation::AlreadyRunning { pid });
-        }
+    if let Some(pid) = read_pid(&pid_path)
+        && is_process_alive(pid)
+    {
+        return Ok(ServerOperation::AlreadyRunning { pid });
     }
 
     let mut command = Command::new(exe_path);
@@ -464,24 +464,26 @@ mod tests {
 
     #[test]
     fn route_pool_config_snapshot_reports_enabled_pool() {
-        let mut config = Config::default();
-        config.route_pool = Some(ccr_types::RoutePoolConfig {
-            enabled: true,
-            failure_threshold: 0,
-            ban_seconds: 0,
-            candidates: vec![
-                ccr_types::RoutePoolCandidate {
-                    route: "anthropic,claude".into(),
-                    enabled: true,
-                    priority: 1,
-                },
-                ccr_types::RoutePoolCandidate {
-                    route: "openai,gpt".into(),
-                    enabled: false,
-                    priority: 2,
-                },
-            ],
-        });
+        let config = Config {
+            route_pool: Some(ccr_types::RoutePoolConfig {
+                enabled: true,
+                failure_threshold: 0,
+                ban_seconds: 0,
+                candidates: vec![
+                    ccr_types::RoutePoolCandidate {
+                        route: "anthropic,claude".into(),
+                        enabled: true,
+                        priority: 1,
+                    },
+                    ccr_types::RoutePoolCandidate {
+                        route: "openai,gpt".into(),
+                        enabled: false,
+                        priority: 2,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(
             route_pool_config_snapshot(&config),
