@@ -4,6 +4,7 @@ use super::common::{
 };
 use crate::status::AdditiveClientSnapshot;
 use anyhow::{Context, Result};
+use ccr_types::Config;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,9 +27,13 @@ fn default_openclaw_config_path() -> PathBuf {
 
 pub fn activate_openclaw_ccr() -> Result<()> {
     let config = ccr_config()?;
-    let port = ccr_port(&config);
-    let model = first_route_pool_client_model(&config, DEFAULT_MODEL)?;
-    install_openclaw_ccr(&openclaw_config_path(), port, &model)
+    activate_openclaw_ccr_with_config(&config, &openclaw_config_path())
+}
+
+fn activate_openclaw_ccr_with_config(config: &Config, path: &Path) -> Result<()> {
+    let port = ccr_port(config);
+    let model = first_route_pool_client_model(config, DEFAULT_MODEL)?;
+    install_openclaw_ccr(path, port, &model)
 }
 
 pub fn deactivate_openclaw_ccr() -> Result<()> {
@@ -218,6 +223,22 @@ fn atomic_write_json(path: &Path, config: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccr_types::{RoutePoolCandidate, RoutePoolConfig};
+
+    fn disabled_route_pool_config() -> Config {
+        Config {
+            route_pool: Some(RoutePoolConfig {
+                enabled: false,
+                candidates: vec![RoutePoolCandidate {
+                    route: "openai,gpt-4o".to_string(),
+                    enabled: true,
+                    priority: 0,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn build_creates_provider_from_empty_config() {
@@ -291,5 +312,20 @@ mod tests {
             config["agents"]["defaults"]["model"]["primary"].as_str(),
             Some("other/model")
         );
+    }
+
+    #[test]
+    fn activate_fails_before_writing_when_route_pool_has_no_active_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openclaw.json");
+        let original = r#"{ models: { providers: { other: {} } } }"#;
+        fs::write(&path, original).unwrap();
+
+        let error = activate_openclaw_ccr_with_config(&disabled_route_pool_config(), &path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Route Pool is not configured or has no enabled routes"));
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 }
