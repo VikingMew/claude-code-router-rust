@@ -56,12 +56,10 @@ Routing helpers and token counting.
 
 Responsibilities:
 
-- Select special routes for background, thinking, web search, long context and image cases.
 - Resolve provider from a route string.
 - Count request tokens using configured tokenizer backend.
-- Load project/custom router overrides where supported.
 
-Long-term invariant: Route Pool is the primary runtime routing model. Do not restore `Router.default` or failover fallback.
+Runtime routing invariant: Route Pool is the only primary routing model. Server upstream attempts come from enabled Route Pool candidates. Do not restore `Router.default`, scenario route fallback, project/custom router overrides or failover fallback.
 
 ### `ccr-transformer`
 
