@@ -11,6 +11,7 @@ pub trait Transformer: Send + Sync {
 
 pub struct TransformerRegistry(HashMap<String, Box<dyn Transformer>>);
 
+#[allow(clippy::new_without_default)]
 impl TransformerRegistry {
     pub fn new() -> Self {
         let mut map: HashMap<String, Box<dyn Transformer>> = HashMap::new();

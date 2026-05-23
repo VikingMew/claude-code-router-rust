@@ -30,6 +30,7 @@ pub struct SseRewriter {
     state: State,
 }
 
+#[allow(clippy::new_without_default)]
 impl SseRewriter {
     pub fn new() -> Self {
         Self {

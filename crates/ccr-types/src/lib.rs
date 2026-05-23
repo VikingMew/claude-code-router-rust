@@ -451,6 +451,11 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_backend_default_is_tiktoken() {
+        assert_eq!(TokenizerBackend::default(), TokenizerBackend::Tiktoken);
+    }
+
+    #[test]
     fn messages_request_stream_default_false() {
         let json = r#"{"model":"claude-3-5-sonnet","messages":[],"max_tokens":100}"#;
         let r: MessagesRequest = serde_json::from_str(json).unwrap();
