@@ -10,7 +10,6 @@ members = [
     "crates/ccr-preset",
     "crates/ccr-server",
     "crates/ccr-ui",
-    "crates/ccr-plugin",
     "crates/ccr-app-core",
 ]
 resolver = "2"
