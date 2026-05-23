@@ -461,8 +461,10 @@ mod tests {
     #[test]
     fn codex_paths_use_defaults_when_override_unset_or_blank() {
         let unset = AppSettings::default();
-        let mut blank = AppSettings::default();
-        blank.codex_config_path = Some("  ".to_string());
+        let blank = AppSettings {
+            codex_config_path: Some("  ".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(
             codex_config_paths_from_settings(&unset),

@@ -9,7 +9,9 @@ use ccr_app_core::status::{
     RuntimeStatusSnapshot, ServerSnapshot, StatusSnapshot,
 };
 use ccr_app_core::{
-    metrics::{RouteMetricSummary, TtftMetricSummary},
+    metrics::{
+        MetricsFileDiagnostics, RouteMetricSummary, RuntimeMetricsDiagnostics, TtftMetricSummary,
+    },
     official_provider::{OfficialCredentialState, OfficialCredentialStatus},
     runtime_status::{
         clear_route_pool_ban, reset_route_pool_route, RoutePoolEvent, RoutePoolStatusResponse,
@@ -80,6 +82,7 @@ pub struct StatusTab {
     route_pool_events: Option<Result<Vec<RoutePoolEvent>, String>>,
     runtime_metrics_summary: Option<Result<Vec<RouteMetricSummary>, String>>,
     ttft_metrics_summary: Option<Result<Vec<TtftMetricSummary>, String>>,
+    runtime_metrics_diagnostics: Option<Result<RuntimeMetricsDiagnostics, String>>,
     route_pool_action_status: String,
     route_pool_action_checking: bool,
     route_pool_last_refresh: Option<Instant>,
@@ -113,6 +116,7 @@ impl StatusTab {
             route_pool_events: None,
             runtime_metrics_summary: None,
             ttft_metrics_summary: None,
+            runtime_metrics_diagnostics: None,
             route_pool_action_status: String::new(),
             route_pool_action_checking: false,
             route_pool_last_refresh: None,
@@ -131,9 +135,9 @@ impl StatusTab {
         let exe_path = ccr_server_executable();
         self.spawn_task(move || {
             let snapshot = read_status_snapshot();
-            let message = if !snapshot.server_auto_start {
-                String::new()
-            } else if matches!(snapshot.server, ServerSnapshot::Running { .. }) {
+            let message = if !snapshot.server_auto_start
+                || matches!(snapshot.server, ServerSnapshot::Running { .. })
+            {
                 String::new()
             } else {
                 match exe_path {
@@ -287,6 +291,7 @@ impl StatusTab {
                     self.route_pool_events = Some(snapshot.route_pool_events);
                     self.runtime_metrics_summary = Some(snapshot.runtime_metrics_summary);
                     self.ttft_metrics_summary = Some(snapshot.ttft_metrics_summary);
+                    self.runtime_metrics_diagnostics = Some(snapshot.runtime_metrics_diagnostics);
                     self.route_pool_refreshing = false;
                 }
                 StatusTaskResult::Health(message) => {
@@ -463,6 +468,7 @@ impl StatusTab {
                 ui.label("Runtime: Not applicable until Route Pool has active routes");
                 self.route_pool_status = None;
                 self.route_pool_events = None;
+                self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
             }
@@ -473,6 +479,7 @@ impl StatusTab {
                 ui.label("Runtime: Not applicable while Route Pool is disabled");
                 self.route_pool_status = None;
                 self.route_pool_events = None;
+                self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
             }
@@ -481,6 +488,7 @@ impl StatusTab {
                 ui.label("Runtime: Not applicable");
                 self.route_pool_status = None;
                 self.route_pool_events = None;
+                self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
             }
@@ -552,6 +560,18 @@ impl StatusTab {
                     ui.label("Real traffic metrics: Loading.");
                 }
             }
+            match &self.runtime_metrics_diagnostics {
+                Some(Ok(diagnostics)) => show_runtime_metrics_diagnostics(ui, diagnostics),
+                Some(Err(error)) => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!("Runtime metrics diagnostics unavailable: {error}"),
+                    );
+                }
+                None => {
+                    ui.label("Runtime metrics diagnostics: Loading.");
+                }
+            }
             match &self.ttft_metrics_summary {
                 Some(Ok(summary)) => show_ttft_metrics_summary(ui, summary),
                 Some(Err(error)) => {
@@ -569,6 +589,7 @@ impl StatusTab {
             self.route_pool_events = None;
             self.runtime_metrics_summary = None;
             self.ttft_metrics_summary = None;
+            self.runtime_metrics_diagnostics = None;
             self.route_pool_last_refresh = None;
             ui.label("Route Pool runtime: Unavailable while server is stopped.");
         }
@@ -949,7 +970,7 @@ fn show_route_pool_runtime(
 
     let mut action = None;
     let mut routes = status.routes.iter().collect::<Vec<_>>();
-    routes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    routes.sort_by_key(|(route, _)| *route);
     for (route, state) in routes {
         ui.horizontal_wrapped(|ui| {
             let banned = state.banned_until_epoch_secs.is_some();
@@ -1039,6 +1060,54 @@ fn show_runtime_metrics_summary(ui: &mut egui::Ui, summary: &[RouteMetricSummary
             }
         });
     }
+}
+
+fn show_runtime_metrics_diagnostics(ui: &mut egui::Ui, diagnostics: &RuntimeMetricsDiagnostics) {
+    let attempt_warning = metrics_file_needs_attention(&diagnostics.attempts);
+    let request_warning = metrics_file_needs_attention(&diagnostics.requests);
+    if !attempt_warning && !request_warning {
+        ui.label("Runtime metrics files: OK.");
+        return;
+    }
+    ui.colored_label(
+        egui::Color32::YELLOW,
+        "Runtime metrics file diagnostics need attention:",
+    );
+    show_metrics_file_diagnostics(ui, "Attempts", &diagnostics.attempts);
+    show_metrics_file_diagnostics(ui, "Requests", &diagnostics.requests);
+}
+
+fn metrics_file_needs_attention(diagnostics: &MetricsFileDiagnostics) -> bool {
+    diagnostics.malformed_lines > 0
+        || diagnostics.retention_applied
+        || diagnostics.recent_error_summary.is_some()
+        || diagnostics.retention_error_summary.is_some()
+}
+
+fn show_metrics_file_diagnostics(
+    ui: &mut egui::Ui,
+    label: &str,
+    diagnostics: &MetricsFileDiagnostics,
+) {
+    if !metrics_file_needs_attention(diagnostics) {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.label(label);
+        ui.label(format!("Path: {}", diagnostics.path));
+        ui.label(format!("Read: {}", diagnostics.read_lines));
+        ui.label(format!("Valid: {}", diagnostics.successful_lines));
+        ui.label(format!("Bad: {}", diagnostics.malformed_lines));
+        if diagnostics.retention_applied {
+            ui.label(format!("Retained: {}", diagnostics.retained_lines));
+        }
+        if let Some(error) = &diagnostics.recent_error_summary {
+            ui.label(format!("Last parse error: {error}"));
+        }
+        if let Some(error) = &diagnostics.retention_error_summary {
+            ui.label(format!("Retention error: {error}"));
+        }
+    });
 }
 
 fn show_ttft_metrics_summary(ui: &mut egui::Ui, summary: &[TtftMetricSummary]) {

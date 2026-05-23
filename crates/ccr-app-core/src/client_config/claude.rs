@@ -504,8 +504,10 @@ mod tests {
     #[test]
     fn claude_paths_use_defaults_when_override_unset_or_blank() {
         let unset = AppSettings::default();
-        let mut blank = AppSettings::default();
-        blank.claude_config_path = Some("  ".to_string());
+        let blank = AppSettings {
+            claude_config_path: Some("  ".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(
             claude_config_paths_from_settings(&unset),

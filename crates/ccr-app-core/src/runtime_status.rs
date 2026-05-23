@@ -1,4 +1,4 @@
-use crate::metrics::{RouteMetricSummary, TtftMetricSummary};
+use crate::metrics::{RouteMetricSummary, RuntimeMetricsDiagnostics, TtftMetricSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -112,6 +112,16 @@ pub fn fetch_ttft_metrics_summary(
         &format!(
             "http://127.0.0.1:{port}/api/runtime-metrics/ttft-summary?window={TTFT_SUMMARY_WINDOW_SECONDS}"
         ),
+        api_key,
+    )
+}
+
+pub fn fetch_runtime_metrics_diagnostics(
+    port: u16,
+    api_key: Option<&str>,
+) -> Result<RuntimeMetricsDiagnostics, String> {
+    fetch_json(
+        &format!("http://127.0.0.1:{port}/api/runtime-metrics/diagnostics"),
         api_key,
     )
 }
@@ -422,6 +432,46 @@ mod tests {
         assert!(request.starts_with("GET /api/runtime-metrics/ttft-summary?window=300 HTTP/1.1"));
         assert_eq!(summary[0].window_seconds, 300);
         assert_eq!(summary[0].latest_request_id.as_deref(), Some("request-1"));
+    }
+
+    #[test]
+    fn runtime_metrics_diagnostics_fetch_uses_core_metric_type() {
+        let body = r#"{
+            "attempts": {
+                "path": "/tmp/runtime-metrics.jsonl",
+                "read_lines": 3,
+                "successful_lines": 2,
+                "malformed_lines": 1,
+                "recent_error_summary": "line 2: expected value",
+                "file_size_bytes": 120,
+                "max_file_size_bytes": 5242880,
+                "retention_applied": false,
+                "retained_lines": 2,
+                "retention_error_summary": null
+            },
+            "requests": {
+                "path": "/tmp/runtime-request-metrics.jsonl",
+                "read_lines": 2,
+                "successful_lines": 2,
+                "malformed_lines": 0,
+                "recent_error_summary": null,
+                "file_size_bytes": 80,
+                "max_file_size_bytes": 5242880,
+                "retention_applied": true,
+                "retained_lines": 1,
+                "retention_error_summary": null
+            }
+        }"#;
+        let (port, handle) = serve_once("200 OK", body);
+
+        let diagnostics =
+            fetch_runtime_metrics_diagnostics(port, None).expect("metrics diagnostics");
+        let request = handle.join().expect("request capture");
+
+        assert!(request.starts_with("GET /api/runtime-metrics/diagnostics HTTP/1.1"));
+        assert_eq!(diagnostics.attempts.malformed_lines, 1);
+        assert!(diagnostics.requests.retention_applied);
+        assert_eq!(diagnostics.requests.retained_lines, 1);
     }
 
     #[test]

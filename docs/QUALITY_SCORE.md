@@ -9,7 +9,7 @@ This is a lightweight scorecard for judging whether the repository is becoming e
 
 | Area | Score | Notes |
 | --- | ---: | --- |
-| Build and test basics | 7/10 | CI exists and runs docs structure, fmt and workspace tests; Ubuntu hosts need documented native UI dependencies such as `libxdo-dev`. |
+| Build and test basics | 7/10 | CI exists and runs docs consistency checks, fmt, clippy and workspace tests; Ubuntu hosts need documented native UI dependencies such as `libxdo-dev`. |
 | Architecture readability | 7/10 | Top-level `ARCHITECTURE.md` exists and maps crate responsibilities and runtime paths. |
 | UI/core separation | 6/10 | `ccr-app-core` exists, but UI still owns some operation logic. |
 | Routing model clarity | 8/10 | Route Pool is current model; provider-pool status alias has been removed. |

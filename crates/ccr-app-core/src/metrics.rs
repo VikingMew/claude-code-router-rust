@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+pub const DEFAULT_MAX_METRICS_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+static ATTEMPT_METRICS_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static REQUEST_METRICS_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttemptOutcome {
@@ -63,6 +69,27 @@ pub struct RuntimeMetricsStore {
     requests: Vec<ClientRequestMetric>,
     max_attempts: usize,
     max_requests: usize,
+    diagnostics: RuntimeMetricsDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMetricsDiagnostics {
+    pub attempts: MetricsFileDiagnostics,
+    pub requests: MetricsFileDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricsFileDiagnostics {
+    pub path: String,
+    pub read_lines: u64,
+    pub successful_lines: u64,
+    pub malformed_lines: u64,
+    pub recent_error_summary: Option<String>,
+    pub file_size_bytes: Option<u64>,
+    pub max_file_size_bytes: u64,
+    pub retention_applied: bool,
+    pub retained_lines: u64,
+    pub retention_error_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,20 +126,25 @@ impl RuntimeMetricsStore {
             requests: Vec::new(),
             max_attempts,
             max_requests: max_attempts,
+            diagnostics: RuntimeMetricsDiagnostics::for_paths(
+                &runtime_metrics_path(),
+                &runtime_request_metrics_path(),
+            ),
         }
     }
 
     pub fn load(max_attempts: usize) -> Self {
         let mut store = Self::new(max_attempts);
-        if let Ok(attempts) = read_attempt_metrics_from_path(&runtime_metrics_path()) {
-            for attempt in attempts {
-                store.record_in_memory(attempt);
-            }
+        let attempts = read_attempt_metrics_with_diagnostics_from_path(&runtime_metrics_path());
+        store.diagnostics.attempts = attempts.diagnostics;
+        for attempt in attempts.records {
+            store.record_in_memory(attempt);
         }
-        if let Ok(requests) = read_request_metrics_from_path(&runtime_request_metrics_path()) {
-            for request in requests {
-                store.record_request_in_memory(request);
-            }
+        let requests =
+            read_request_metrics_with_diagnostics_from_path(&runtime_request_metrics_path());
+        store.diagnostics.requests = requests.diagnostics;
+        for request in requests.records {
+            store.record_request_in_memory(request);
         }
         store
     }
@@ -203,6 +235,48 @@ impl RuntimeMetricsStore {
             })
             .collect()
     }
+
+    pub fn diagnostics(&self) -> RuntimeMetricsDiagnostics {
+        self.diagnostics.clone()
+    }
+}
+
+impl Default for RuntimeMetricsDiagnostics {
+    fn default() -> Self {
+        Self::for_paths(&runtime_metrics_path(), &runtime_request_metrics_path())
+    }
+}
+
+impl RuntimeMetricsDiagnostics {
+    fn for_paths(attempts_path: &Path, requests_path: &Path) -> Self {
+        Self {
+            attempts: MetricsFileDiagnostics::new(attempts_path),
+            requests: MetricsFileDiagnostics::new(requests_path),
+        }
+    }
+}
+
+impl MetricsFileDiagnostics {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.display().to_string(),
+            read_lines: 0,
+            successful_lines: 0,
+            malformed_lines: 0,
+            recent_error_summary: None,
+            file_size_bytes: None,
+            max_file_size_bytes: DEFAULT_MAX_METRICS_FILE_BYTES,
+            retention_applied: false,
+            retained_lines: 0,
+            retention_error_summary: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsReadResult<T> {
+    pub records: Vec<T>,
+    pub diagnostics: MetricsFileDiagnostics,
 }
 
 pub fn runtime_metrics_path() -> PathBuf {
@@ -222,7 +296,21 @@ pub fn runtime_request_metrics_path() -> PathBuf {
 pub fn append_attempt_metric(metric: &UpstreamAttemptMetric) {
     #[cfg(not(test))]
     {
-        let _ = append_attempt_metric_to_path(&runtime_metrics_path(), metric);
+        let path = runtime_metrics_path();
+        let append_result = with_attempt_metrics_file_lock(|| {
+            append_attempt_metric_line_to_path(&path, metric).and_then(|_| {
+                metrics_file_exceeds_retention_limit(&path, DEFAULT_MAX_METRICS_FILE_BYTES)
+            })
+        });
+        if append_result.unwrap_or(false) {
+            let _ = std::thread::Builder::new()
+                .name("ccr-attempt-metrics-retention".into())
+                .spawn(move || {
+                    let _ = with_attempt_metrics_file_lock(|| {
+                        compact_attempt_metrics_if_needed(&path, DEFAULT_MAX_METRICS_FILE_BYTES)
+                    });
+                });
+        }
     }
     #[cfg(test)]
     {
@@ -233,7 +321,21 @@ pub fn append_attempt_metric(metric: &UpstreamAttemptMetric) {
 pub fn append_request_metric(metric: &ClientRequestMetric) {
     #[cfg(not(test))]
     {
-        let _ = append_request_metric_to_path(&runtime_request_metrics_path(), metric);
+        let path = runtime_request_metrics_path();
+        let append_result = with_request_metrics_file_lock(|| {
+            append_request_metric_line_to_path(&path, metric).and_then(|_| {
+                metrics_file_exceeds_retention_limit(&path, DEFAULT_MAX_METRICS_FILE_BYTES)
+            })
+        });
+        if append_result.unwrap_or(false) {
+            let _ = std::thread::Builder::new()
+                .name("ccr-request-metrics-retention".into())
+                .spawn(move || {
+                    let _ = with_request_metrics_file_lock(|| {
+                        compact_request_metrics_if_needed(&path, DEFAULT_MAX_METRICS_FILE_BYTES)
+                    });
+                });
+        }
     }
     #[cfg(test)]
     {
@@ -242,6 +344,25 @@ pub fn append_request_metric(metric: &ClientRequestMetric) {
 }
 
 pub fn append_attempt_metric_to_path(
+    path: &Path,
+    metric: &UpstreamAttemptMetric,
+) -> std::io::Result<()> {
+    append_attempt_metric_to_path_with_retention(path, metric, DEFAULT_MAX_METRICS_FILE_BYTES)
+}
+
+pub fn append_attempt_metric_to_path_with_retention(
+    path: &Path,
+    metric: &UpstreamAttemptMetric,
+    max_file_size_bytes: u64,
+) -> std::io::Result<()> {
+    with_attempt_metrics_file_lock(|| {
+        append_attempt_metric_line_to_path(path, metric)?;
+        let _ = compact_attempt_metrics_if_needed(path, max_file_size_bytes);
+        Ok(())
+    })
+}
+
+fn append_attempt_metric_line_to_path(
     path: &Path,
     metric: &UpstreamAttemptMetric,
 ) -> std::io::Result<()> {
@@ -258,18 +379,191 @@ pub fn append_attempt_metric_to_path(
 }
 
 pub fn read_attempt_metrics_from_path(path: &Path) -> std::io::Result<Vec<UpstreamAttemptMetric>> {
+    let result = read_attempt_metrics_with_diagnostics_from_path(path);
+    Ok(result.records)
+}
+
+pub fn read_attempt_metrics_with_diagnostics_from_path(
+    path: &Path,
+) -> MetricsReadResult<UpstreamAttemptMetric> {
+    read_metrics_with_diagnostics_from_path(path, DEFAULT_MAX_METRICS_FILE_BYTES, |line| {
+        serde_json::from_str::<UpstreamAttemptMetric>(line)
+    })
+}
+
+pub fn read_attempt_metrics_with_retention_from_path(
+    path: &Path,
+    max_file_size_bytes: u64,
+) -> MetricsReadResult<UpstreamAttemptMetric> {
+    read_metrics_with_diagnostics_from_path(path, max_file_size_bytes, |line| {
+        serde_json::from_str::<UpstreamAttemptMetric>(line)
+    })
+}
+
+fn compact_attempt_metrics_if_needed(path: &Path, max_file_size_bytes: u64) -> std::io::Result<()> {
+    compact_metrics_if_needed(path, max_file_size_bytes, |line| {
+        serde_json::from_str::<UpstreamAttemptMetric>(line)
+    })
+}
+
+fn with_attempt_metrics_file_lock<T>(operation: impl FnOnce() -> T) -> T {
+    let _guard = ATTEMPT_METRICS_FILE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
+fn read_metrics_with_diagnostics_from_path<T, F>(
+    path: &Path,
+    max_file_size_bytes: u64,
+    parse: F,
+) -> MetricsReadResult<T>
+where
+    T: Serialize,
+    F: Fn(&str) -> serde_json::Result<T>,
+{
+    let mut diagnostics = MetricsFileDiagnostics::new(path);
+    diagnostics.max_file_size_bytes = max_file_size_bytes;
+    diagnostics.file_size_bytes = std::fs::metadata(path).ok().map(|metadata| metadata.len());
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return MetricsReadResult {
+                records: Vec::new(),
+                diagnostics,
+            };
+        }
+        Err(error) => {
+            diagnostics.recent_error_summary = Some(error.to_string());
+            return MetricsReadResult {
+                records: Vec::new(),
+                diagnostics,
+            };
+        }
+    };
+    let mut records = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        diagnostics.read_lines += 1;
+        match parse(line) {
+            Ok(record) => {
+                diagnostics.successful_lines += 1;
+                records.push(record);
+            }
+            Err(error) => {
+                diagnostics.malformed_lines += 1;
+                diagnostics.recent_error_summary = Some(format!("line {}: {}", index + 1, error));
+            }
+        }
+    }
+    diagnostics.retained_lines = diagnostics.successful_lines;
+    if diagnostics
+        .file_size_bytes
+        .is_some_and(|size| size > max_file_size_bytes)
+    {
+        diagnostics.retention_applied = true;
+        match rewrite_records_within_size(path, &records, max_file_size_bytes) {
+            Ok(retained_lines) => {
+                diagnostics.retained_lines = retained_lines;
+                diagnostics.file_size_bytes =
+                    std::fs::metadata(path).ok().map(|metadata| metadata.len());
+            }
+            Err(error) => {
+                diagnostics.retention_error_summary = Some(error.to_string());
+            }
+        }
+    }
+    MetricsReadResult {
+        records,
+        diagnostics,
+    }
+}
+
+fn compact_metrics_if_needed<T, F>(
+    path: &Path,
+    max_file_size_bytes: u64,
+    parse: F,
+) -> std::io::Result<()>
+where
+    T: Serialize,
+    F: Fn(&str) -> serde_json::Result<T>,
+{
+    let size = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    Ok(content
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect())
+    if size <= max_file_size_bytes {
+        return Ok(());
+    }
+    let _ = read_metrics_with_diagnostics_from_path(path, max_file_size_bytes, parse);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn metrics_file_exceeds_retention_limit(
+    path: &Path,
+    max_file_size_bytes: u64,
+) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len() > max_file_size_bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn rewrite_records_within_size<T: Serialize>(
+    path: &Path,
+    records: &[T],
+    max_file_size_bytes: u64,
+) -> std::io::Result<u64> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut lines = Vec::new();
+    let mut bytes = 0_u64;
+    for record in records.iter().rev() {
+        let line = serde_json::to_string(record)?;
+        let line_bytes = line.len() as u64 + 1;
+        if !lines.is_empty() && bytes.saturating_add(line_bytes) > max_file_size_bytes {
+            break;
+        }
+        if lines.is_empty() && line_bytes > max_file_size_bytes {
+            lines.push(line);
+            break;
+        }
+        bytes += line_bytes;
+        lines.push(line);
+    }
+    lines.reverse();
+    let mut content = lines.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    std::fs::write(path, content)?;
+    Ok(lines.len() as u64)
 }
 
 pub fn append_request_metric_to_path(
+    path: &Path,
+    metric: &ClientRequestMetric,
+) -> std::io::Result<()> {
+    append_request_metric_to_path_with_retention(path, metric, DEFAULT_MAX_METRICS_FILE_BYTES)
+}
+
+pub fn append_request_metric_to_path_with_retention(
+    path: &Path,
+    metric: &ClientRequestMetric,
+    max_file_size_bytes: u64,
+) -> std::io::Result<()> {
+    with_request_metrics_file_lock(|| {
+        append_request_metric_line_to_path(path, metric)?;
+        let _ = compact_request_metrics_if_needed(path, max_file_size_bytes);
+        Ok(())
+    })
+}
+
+fn append_request_metric_line_to_path(
     path: &Path,
     metric: &ClientRequestMetric,
 ) -> std::io::Result<()> {
@@ -286,15 +580,39 @@ pub fn append_request_metric_to_path(
 }
 
 pub fn read_request_metrics_from_path(path: &Path) -> std::io::Result<Vec<ClientRequestMetric>> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    Ok(content
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect())
+    let result = read_request_metrics_with_diagnostics_from_path(path);
+    Ok(result.records)
+}
+
+pub fn read_request_metrics_with_diagnostics_from_path(
+    path: &Path,
+) -> MetricsReadResult<ClientRequestMetric> {
+    read_metrics_with_diagnostics_from_path(path, DEFAULT_MAX_METRICS_FILE_BYTES, |line| {
+        serde_json::from_str::<ClientRequestMetric>(line)
+    })
+}
+
+pub fn read_request_metrics_with_retention_from_path(
+    path: &Path,
+    max_file_size_bytes: u64,
+) -> MetricsReadResult<ClientRequestMetric> {
+    read_metrics_with_diagnostics_from_path(path, max_file_size_bytes, |line| {
+        serde_json::from_str::<ClientRequestMetric>(line)
+    })
+}
+
+fn compact_request_metrics_if_needed(path: &Path, max_file_size_bytes: u64) -> std::io::Result<()> {
+    compact_metrics_if_needed(path, max_file_size_bytes, |line| {
+        serde_json::from_str::<ClientRequestMetric>(line)
+    })
+}
+
+fn with_request_metrics_file_lock<T>(operation: impl FnOnce() -> T) -> T {
+    let _guard = REQUEST_METRICS_FILE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
 }
 
 #[derive(Debug, Default)]
@@ -390,11 +708,7 @@ impl SummaryBuilder {
             attempts: self.attempts,
             successes: self.successes,
             failures: self.failures,
-            average_latency_ms: if self.latency_count == 0 {
-                None
-            } else {
-                Some(self.latency_sum / self.latency_count)
-            },
+            average_latency_ms: self.latency_sum.checked_div(self.latency_count),
             last_http_status: self.last_http_status,
             last_error_class: self.last_error_class,
         }
@@ -506,6 +820,88 @@ mod tests {
     }
 
     #[test]
+    fn attempt_metrics_diagnostics_count_malformed_lines() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("metrics.jsonl");
+        let first = metric("openai,a", AttemptOutcome::Success, Some(10));
+        let second = metric("openai,b", AttemptOutcome::HttpError, Some(20));
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnot-json\n{}\n",
+                serde_json::to_string(&first).unwrap(),
+                serde_json::to_string(&second).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let result = read_attempt_metrics_with_diagnostics_from_path(&path);
+
+        assert_eq!(result.records, vec![first, second]);
+        assert_eq!(result.diagnostics.read_lines, 3);
+        assert_eq!(result.diagnostics.successful_lines, 2);
+        assert_eq!(result.diagnostics.malformed_lines, 1);
+        assert!(
+            result
+                .diagnostics
+                .recent_error_summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("line 2")
+        );
+    }
+
+    #[test]
+    fn attempt_metrics_retention_keeps_recent_valid_records() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("metrics.jsonl");
+        let old = metric("old,m", AttemptOutcome::Success, Some(10));
+        let recent = metric("recent,m", AttemptOutcome::Success, Some(20));
+        let newest = metric("newest,m", AttemptOutcome::HttpError, Some(30));
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnot-json\n{}\n{}\n",
+                serde_json::to_string(&old).unwrap(),
+                serde_json::to_string(&recent).unwrap(),
+                serde_json::to_string(&newest).unwrap()
+            ),
+        )
+        .unwrap();
+        let max_bytes = serde_json::to_string(&recent).unwrap().len() as u64
+            + serde_json::to_string(&newest).unwrap().len() as u64
+            + 2;
+
+        let result = read_attempt_metrics_with_retention_from_path(&path, max_bytes);
+        let after_retention = read_attempt_metrics_from_path(&path).unwrap();
+
+        assert_eq!(result.records, vec![old, recent.clone(), newest.clone()]);
+        assert_eq!(result.diagnostics.malformed_lines, 1);
+        assert!(result.diagnostics.retention_applied);
+        assert_eq!(result.diagnostics.retained_lines, 2);
+        assert_eq!(after_retention, vec![recent, newest]);
+    }
+
+    #[test]
+    fn attempt_metrics_append_helper_applies_retention() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("metrics.jsonl");
+        let old = metric("old,m", AttemptOutcome::Success, Some(10));
+        let recent = metric("recent,m", AttemptOutcome::Success, Some(20));
+        let newest = metric("newest,m", AttemptOutcome::Success, Some(30));
+        append_attempt_metric_to_path(&path, &old).unwrap();
+        append_attempt_metric_to_path(&path, &recent).unwrap();
+        let max_bytes = serde_json::to_string(&recent).unwrap().len() as u64
+            + serde_json::to_string(&newest).unwrap().len() as u64
+            + 2;
+
+        append_attempt_metric_to_path_with_retention(&path, &newest, max_bytes).unwrap();
+        let after_retention = read_attempt_metrics_from_path(&path).unwrap();
+
+        assert_eq!(after_retention, vec![recent, newest]);
+    }
+
+    #[test]
     fn records_and_limits_recent_requests() {
         let mut store = RuntimeMetricsStore::new(2);
 
@@ -540,6 +936,80 @@ mod tests {
         let metrics = read_request_metrics_from_path(&path).unwrap();
 
         assert_eq!(metrics, vec![first, second]);
+    }
+
+    #[test]
+    fn request_metrics_diagnostics_count_malformed_lines() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("requests.jsonl");
+        let first = request_metric("request-1", 1);
+        let second = request_metric("request-2", 2);
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnot-json\n{}\n",
+                serde_json::to_string(&first).unwrap(),
+                serde_json::to_string(&second).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let result = read_request_metrics_with_diagnostics_from_path(&path);
+
+        assert_eq!(result.records, vec![first, second]);
+        assert_eq!(result.diagnostics.read_lines, 3);
+        assert_eq!(result.diagnostics.successful_lines, 2);
+        assert_eq!(result.diagnostics.malformed_lines, 1);
+    }
+
+    #[test]
+    fn request_metrics_retention_keeps_recent_valid_records() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("requests.jsonl");
+        let old = request_metric("request-1", 1);
+        let recent = request_metric("request-2", 2);
+        let newest = request_metric("request-3", 3);
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnot-json\n{}\n{}\n",
+                serde_json::to_string(&old).unwrap(),
+                serde_json::to_string(&recent).unwrap(),
+                serde_json::to_string(&newest).unwrap()
+            ),
+        )
+        .unwrap();
+        let max_bytes = serde_json::to_string(&recent).unwrap().len() as u64
+            + serde_json::to_string(&newest).unwrap().len() as u64
+            + 2;
+
+        let result = read_request_metrics_with_retention_from_path(&path, max_bytes);
+        let after_retention = read_request_metrics_from_path(&path).unwrap();
+
+        assert_eq!(result.records, vec![old, recent.clone(), newest.clone()]);
+        assert_eq!(result.diagnostics.malformed_lines, 1);
+        assert!(result.diagnostics.retention_applied);
+        assert_eq!(result.diagnostics.retained_lines, 2);
+        assert_eq!(after_retention, vec![recent, newest]);
+    }
+
+    #[test]
+    fn request_metrics_append_helper_applies_retention() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("requests.jsonl");
+        let old = request_metric("request-1", 1);
+        let recent = request_metric("request-2", 2);
+        let newest = request_metric("request-3", 3);
+        append_request_metric_to_path(&path, &old).unwrap();
+        append_request_metric_to_path(&path, &recent).unwrap();
+        let max_bytes = serde_json::to_string(&recent).unwrap().len() as u64
+            + serde_json::to_string(&newest).unwrap().len() as u64
+            + 2;
+
+        append_request_metric_to_path_with_retention(&path, &newest, max_bytes).unwrap();
+        let after_retention = read_request_metrics_from_path(&path).unwrap();
+
+        assert_eq!(after_retention, vec![recent, newest]);
     }
 
     #[test]

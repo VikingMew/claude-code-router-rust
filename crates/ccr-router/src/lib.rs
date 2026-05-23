@@ -103,7 +103,10 @@ pub fn find_provider<'a>(model_str: &str, config: &'a Config) -> Option<&'a Prov
 }
 
 pub fn model_name(model_str: &str) -> &str {
-    model_str.splitn(2, ',').nth(1).unwrap_or(model_str)
+    model_str
+        .split_once(',')
+        .map(|(_, model)| model)
+        .unwrap_or(model_str)
 }
 
 #[cfg(test)]

@@ -57,17 +57,30 @@ pub(crate) struct UpstreamAttemptResponse {
     pub(crate) attempt_started_at: Option<Instant>,
 }
 
+pub(crate) struct RoutePoolRuntime<'a> {
+    pub(crate) client: &'a reqwest::Client,
+    pub(crate) config: &'a Config,
+    pub(crate) transformers: &'a TransformerRegistry,
+    pub(crate) route_pool_state: &'a Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    pub(crate) route_pool_events: &'a Arc<Mutex<VecDeque<RoutePoolEvent>>>,
+    pub(crate) metrics: &'a Arc<Mutex<RuntimeMetricsStore>>,
+}
+
 pub(crate) async fn send_with_route_pool(
-    client: &reqwest::Client,
-    config: &Config,
-    transformers: &TransformerRegistry,
-    route_pool_state: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
-    route_pool_events: &Arc<Mutex<VecDeque<RoutePoolEvent>>>,
-    metrics: &Arc<Mutex<RuntimeMetricsStore>>,
+    runtime: RoutePoolRuntime<'_>,
     inbound: InboundProtocol,
     requested_model: &str,
     body_json: serde_json::Value,
 ) -> Result<UpstreamAttemptResponse, String> {
+    let RoutePoolRuntime {
+        client,
+        config,
+        transformers,
+        route_pool_state,
+        route_pool_events,
+        metrics,
+    } = runtime;
+
     let request_context = RequestMetricContext {
         request_id: next_request_id(),
         started_epoch_secs: epoch_secs(SystemTime::now()),

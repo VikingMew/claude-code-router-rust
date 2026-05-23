@@ -86,3 +86,19 @@ pub async fn get_runtime_metric_ttft_summary(
         .unwrap_or_default();
     HttpResponse::Ok().json(summary)
 }
+
+pub async fn get_runtime_metric_diagnostics(
+    req: HttpRequest,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let diagnostics = state
+        .metrics
+        .lock()
+        .map(|metrics| metrics.diagnostics())
+        .unwrap_or_default();
+    HttpResponse::Ok().json(diagnostics)
+}

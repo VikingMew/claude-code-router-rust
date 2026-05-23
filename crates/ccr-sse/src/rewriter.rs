@@ -78,10 +78,10 @@ impl SseRewriter {
                 } = self.state
                 {
                     let delta = &data["delta"];
-                    if delta.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
-                        if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                            json_buf.push_str(partial);
-                        }
+                    if delta.get("type").and_then(|t| t.as_str()) == Some("input_json_delta")
+                        && let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str())
+                    {
+                        json_buf.push_str(partial);
                     }
                     return (vec![], None); // suppress delta while buffering
                 }
@@ -96,24 +96,29 @@ impl SseRewriter {
                     ref json_buf,
                     index: buf_index,
                 } = self.state
+                    && index == buf_index
                 {
-                    if index == buf_index {
-                        let input = serde_json::from_str(json_buf)
-                            .unwrap_or(Value::Object(Default::default()));
-                        let tool_call = ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input,
-                        };
-                        self.state = State::Passthrough;
-                        return (vec![], Some(tool_call));
-                    }
+                    let input =
+                        serde_json::from_str(json_buf).unwrap_or(Value::Object(Default::default()));
+                    let tool_call = ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input,
+                    };
+                    self.state = State::Passthrough;
+                    return (vec![], Some(tool_call));
                 }
                 (vec![event], None)
             }
 
             _ => (vec![event], None),
         }
+    }
+}
+
+impl Default for SseRewriter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

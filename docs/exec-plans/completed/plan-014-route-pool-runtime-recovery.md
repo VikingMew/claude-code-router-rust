@@ -50,10 +50,12 @@ CCR is UI-first and Route Pool is the only primary routing model. Runtime ban/fa
 - 实际修改: Added in-memory Route Pool event history, authenticated `/api/route-pool/events`, `/api/route-pool/clear-ban` and `/api/route-pool/reset-route`, app-core clients, Status/Routing UI event display and clear/reset controls, and roadmap persistence semantics.
 - 实际偏离计划: Live GUI manual QA was not performed in this unattended session; UI coverage was compile/unit-level plus app-core/server behavior tests.
 - 中途决策: Follow newest human Linear comment and ticket description; implement non-persistent health state with explicit UI/docs text.
+- 2026-05-23 conflict pass: Merged latest `origin/master` again after newest "还有冲突" feedback. Resolved conflicts by keeping master runtime metrics diagnostics/refactors and carrying CCR-22 Route Pool event/action state through the refactored `RoutePoolRuntime` call path.
 
 ## Check / 验证与偏差
 
 - 验证命令: `cargo fmt --check`; `cargo test --package ccr-server route_pool`; `cargo test --package ccr-app-core runtime_status`; `cargo test --package ccr-ui status_tab`; `cargo test --workspace`.
+- 2026-05-23 conflict pass verification: `cargo fmt --check`; `cargo test --package ccr-server route_pool`; `cargo test --package ccr-app-core runtime_status`; `cargo test --package ccr-ui status_tab`; `cargo test --workspace`; `git diff --check`.
 - 手工 QA: Not run against a live desktop window in this unattended session.
 - 发现的偏差: None in automated verification.
 - 代码和文档不一致: Resolved by updating `docs/long-term-roadmap.md` with session-scoped Route Pool health-state semantics.

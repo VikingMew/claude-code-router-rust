@@ -68,11 +68,11 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Start => {
-            if let Some(pid) = read_pid(&pid_path) {
-                if is_process_alive(pid) {
-                    println!("Already running (PID {pid})");
-                    return Ok(());
-                }
+            if let Some(pid) = read_pid(&pid_path)
+                && is_process_alive(pid)
+            {
+                println!("Already running (PID {pid})");
+                return Ok(());
             }
             let exe = std::env::current_exe()?
                 .parent()
@@ -97,16 +97,16 @@ fn main() -> Result<()> {
         }
 
         Commands::Restart => {
-            if let Some(pid) = read_pid(&pid_path) {
-                if is_process_alive(pid) {
-                    #[cfg(unix)]
-                    {
-                        use nix::sys::signal::{self, Signal};
-                        use nix::unistd::Pid;
-                        signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM).ok();
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Some(pid) = read_pid(&pid_path)
+                && is_process_alive(pid)
+            {
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::{self, Signal};
+                    use nix::unistd::Pid;
+                    signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM).ok();
                 }
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
             let exe = std::env::current_exe()?
                 .parent()
