@@ -71,6 +71,7 @@ CCR is UI-first and Route Pool is the only primary routing model. Runtime ban/fa
 
 - 2026-05-21: Route Pool ban/failure state remains non-persistent. Recovery actions and recent event history are session-scoped and exposed through authenticated UI-facing APIs.
 - 2026-05-23: Newest Linear human feedback says the branch still has merge conflicts and asks to pull latest and fix them. Treat current work as conflict resolution on required branch `vikingmew-ccr-22` while preserving the completed CCR-22 feature scope.
+- 2026-05-23: Newest Linear human feedback reports docs structure failure because `docs/exec-plans/active/CCR-23-workpad.md` is a generated/workpad artifact under active execution plans. Treat current work as docs hygiene on the required CCR-22 branch: remove the stray active workpad artifact and rerun docs validation without changing CCR-22 runtime behavior.
 
 ## 完成记录
 
