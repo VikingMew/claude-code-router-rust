@@ -9,11 +9,11 @@ use crate::client_config::openclaw::{
 use crate::client_config::opencode::{
     opencode_config_path, opencode_provider_exists, opencode_provider_present,
 };
-use crate::metrics::{RouteMetricSummary, TtftMetricSummary};
+use crate::metrics::{RouteMetricSummary, RuntimeMetricsDiagnostics, TtftMetricSummary};
 use crate::official_provider::{OfficialCredentialStatus, official_statuses};
 use crate::runtime_status::{
-    RoutePoolStatusResponse, fetch_route_pool_status, fetch_runtime_metrics_summary,
-    fetch_ttft_metrics_summary,
+    RoutePoolStatusResponse, fetch_route_pool_status, fetch_runtime_metrics_diagnostics,
+    fetch_runtime_metrics_summary, fetch_ttft_metrics_summary,
 };
 use crate::settings::route_pool_config;
 use anyhow::{Context, Result};
@@ -143,6 +143,7 @@ pub struct RuntimeStatusSnapshot {
     pub route_pool_status: Result<RoutePoolStatusResponse, String>,
     pub runtime_metrics_summary: Result<Vec<RouteMetricSummary>, String>,
     pub ttft_metrics_summary: Result<Vec<TtftMetricSummary>, String>,
+    pub runtime_metrics_diagnostics: Result<RuntimeMetricsDiagnostics, String>,
 }
 
 impl AdditiveClientSnapshot {
@@ -265,6 +266,7 @@ pub fn fetch_runtime_status_snapshot(port: u16, api_key: Option<&str>) -> Runtim
         route_pool_status: fetch_route_pool_status(port, api_key),
         runtime_metrics_summary: fetch_runtime_metrics_summary(port, api_key),
         ttft_metrics_summary: fetch_ttft_metrics_summary(port, api_key),
+        runtime_metrics_diagnostics: fetch_runtime_metrics_diagnostics(port, api_key),
     }
 }
 
@@ -482,7 +484,7 @@ mod tests {
                     },
                 ],
             }),
-            ..Config::default()
+            ..Default::default()
         };
 
         assert_eq!(

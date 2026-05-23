@@ -305,7 +305,7 @@ fn default_claude_code_opus_model() -> String {
     String::new()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase", untagged)]
 pub enum TokenizerBackend {
     #[default]

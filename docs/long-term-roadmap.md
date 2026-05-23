@@ -157,7 +157,7 @@ docs/exec-plans/
 
 - 维护 `AGENTS.md` 和 `ARCHITECTURE.md`，确保它们持续作为智能体入口地图。
 - 将新的复杂后续问题直接写成 `docs/exec-plans/active/` 下的执行计划。
-- 维护基础 CI：`cargo fmt --check`、`cargo test --workspace` 和文档结构检查。
+- 维护基础 CI：文档一致性检查、`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace`。
 - 保持 Route Pool-only API 命名，不恢复 `/api/provider-pool/status`。
 - 维护 logs query API，避免 UI 和智能体只能读取完整日志文件。
 - 默认关闭 `/api/admin/*`，短期不把 admin API 作为功能扩展点。

@@ -96,6 +96,12 @@ impl TransformerRegistry {
     }
 }
 
+impl Default for TransformerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

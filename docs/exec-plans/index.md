@@ -1,7 +1,7 @@
 # Execution Plans Index
 
 **状态：** 长期索引文档
-**最后验证：** 2026-05-13
+**最后验证：** 2026-05-21
 
 This directory is the canonical home for execution plans and completion records.
 
@@ -98,3 +98,9 @@ Use this outline for complex new work. The normal plan sections are the
 8. Keep progress and decisions in the plan, not only in chat history.
 9. Move the plan to `completed/` when implemented and verified.
 10. Preserve completion evidence in the completed plan.
+
+## Mechanical Checks
+
+`./scripts/check-docs-structure.sh` enforces the execution-plan directory
+shape, active plan naming, active README consistency and the repository rule
+that generated notes or workpad artifacts are not canonical active plans.

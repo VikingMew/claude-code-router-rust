@@ -15,12 +15,14 @@ use ccr_sse::{SseParser, SseRewriter, invoke_continuation};
 use ccr_transformer::TransformerRegistry;
 use ccr_types::{Config, MessagesRequest};
 use handlers::{
-    get_runtime_metric_attempts, get_runtime_metric_requests, get_runtime_metric_summary,
-    get_runtime_metric_ttft_summary,
+    get_runtime_metric_attempts, get_runtime_metric_diagnostics, get_runtime_metric_requests,
+    get_runtime_metric_summary, get_runtime_metric_ttft_summary,
 };
 use runtime::metrics::{record_pending_attempt_ttft, stream_response_with_ttft};
 use runtime::responses_stream::stream_anthropic_as_responses_with_ttft;
-use runtime::route_pool::{RoutePoolRouteState, route_pool_routes_for_log, send_with_route_pool};
+use runtime::route_pool::{
+    RoutePoolRouteState, RoutePoolRuntime, route_pool_routes_for_log, send_with_route_pool,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -276,11 +278,13 @@ async fn messages(
     let body_json: serde_json::Value = serde_json::to_value(&msg_req).unwrap();
 
     let mut upstream_res = match send_with_route_pool(
-        &state.client,
-        &config,
-        &state.transformers,
-        &state.route_pool_state,
-        &state.metrics,
+        RoutePoolRuntime {
+            client: &state.client,
+            config: &config,
+            transformers: &state.transformers,
+            route_pool_state: &state.route_pool_state,
+            metrics: &state.metrics,
+        },
         InboundProtocol::AnthropicMessages,
         &model_str,
         body_json,
@@ -383,11 +387,13 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
     );
 
     let mut upstream_res = match send_with_route_pool(
-        &state.client,
-        &config,
-        &state.transformers,
-        &state.route_pool_state,
-        &state.metrics,
+        RoutePoolRuntime {
+            client: &state.client,
+            config: &config,
+            transformers: &state.transformers,
+            route_pool_state: &state.route_pool_state,
+            metrics: &state.metrics,
+        },
         InboundProtocol::OpenAiResponses,
         &model_str,
         body_json,
@@ -795,6 +801,10 @@ async fn main() -> std::io::Result<()> {
                 "/api/runtime-metrics/ttft-summary",
                 web::get().to(get_runtime_metric_ttft_summary),
             )
+            .route(
+                "/api/runtime-metrics/diagnostics",
+                web::get().to(get_runtime_metric_diagnostics),
+            )
             .route("/api/presets", web::get().to(get_presets))
             .route("/api/presets/{name}", web::get().to(get_preset))
             .route(
@@ -897,6 +907,44 @@ mod tests {
         let body = to_bytes(resp.into_body()).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["input_tokens"].as_u64(), Some(expected as u64));
+    }
+
+    #[actix_web::test]
+    async fn runtime_metrics_diagnostics_handler_serializes_diagnostics() {
+        let mut config = Config {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        config.route_pool = Some(ccr_types::RoutePoolConfig {
+            enabled: true,
+            candidates: vec![],
+            failure_threshold: 1,
+            ban_seconds: 1,
+        });
+        let state = web::Data::new(test_state(config));
+        let req = actix_web::test::TestRequest::get()
+            .insert_header(("authorization", "Bearer test-key"))
+            .to_http_request();
+
+        let resp = get_runtime_metric_diagnostics(req, state).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["attempts"]["malformed_lines"], 0);
+        assert_eq!(value["requests"]["malformed_lines"], 0);
+        assert!(
+            value["attempts"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("runtime-metrics.jsonl")
+        );
+        assert!(
+            value["requests"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("runtime-request-metrics.jsonl")
+        );
     }
 
     #[actix_web::test]

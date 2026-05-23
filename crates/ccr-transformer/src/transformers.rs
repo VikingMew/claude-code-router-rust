@@ -222,12 +222,10 @@ impl Transformer for ToolUseTransformer {
         }
         req
     }
-
     fn transform_response(&self, res: Value) -> Value {
         res
     }
 }
-
 // Extract thinking blocks and prepend as assistant message
 pub struct ReasoningTransformer;
 impl Transformer for ReasoningTransformer {

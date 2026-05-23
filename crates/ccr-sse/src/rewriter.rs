@@ -117,6 +117,12 @@ impl SseRewriter {
     }
 }
 
+impl Default for SseRewriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
