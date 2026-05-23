@@ -9,7 +9,8 @@ use ccr_config::{ReloadableConfig, default_config_path, load_config, save_config
 use ccr_preset::{delete_preset, list_presets, load_preset};
 use ccr_server::{
     InboundProtocol, UpstreamRequest, check_auth, provider_names, redact_config, route_for_display,
-    route_pool_ban_seconds, route_pool_enabled, route_pool_failure_threshold,
+    route_pool_ban_seconds, route_pool_candidates, route_pool_enabled,
+    route_pool_failure_threshold,
 };
 use ccr_sse::{SseParser, SseRewriter, invoke_continuation};
 use ccr_transformer::TransformerRegistry;
@@ -21,9 +22,12 @@ use handlers::{
 use runtime::metrics::{record_pending_attempt_ttft, stream_response_with_ttft};
 use runtime::responses_stream::stream_anthropic_as_responses_with_ttft;
 use runtime::route_pool::{
-    RoutePoolRouteState, RoutePoolRuntime, route_pool_routes_for_log, send_with_route_pool,
+    ROUTE_POOL_EVENT_HISTORY_LIMIT, RoutePoolEvent, RoutePoolRouteState, RoutePoolRuntime,
+    clear_route_pool_ban_state, record_route_pool_event, reset_route_pool_route_state,
+    route_pool_routes_for_log, send_with_route_pool,
 };
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -36,9 +40,14 @@ pub struct AppState {
     client: reqwest::Client,
     agents: Vec<Arc<dyn Agent>>,
     route_pool_state: Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    route_pool_events: Arc<Mutex<VecDeque<RoutePoolEvent>>>,
     metrics: Arc<Mutex<RuntimeMetricsStore>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RoutePoolRouteActionRequest {
+    route: String,
+}
 impl AppState {
     /// Reload configuration from disk
     pub async fn reload_config(&self) -> anyhow::Result<()> {
@@ -176,6 +185,127 @@ async fn get_route_pool_status(req: HttpRequest, state: web::Data<Arc<AppState>>
     }))
 }
 
+async fn get_route_pool_events(
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(ROUTE_POOL_EVENT_HISTORY_LIMIT);
+    let events = state
+        .route_pool_events
+        .lock()
+        .map(|events| {
+            events
+                .iter()
+                .rev()
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    HttpResponse::Ok().json(events)
+}
+
+async fn clear_route_pool_ban(
+    req: HttpRequest,
+    body: web::Json<RoutePoolRouteActionRequest>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let route = body.route.trim();
+    if !configured_route_exists(&config, route) {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "ok": false,
+            "route": route,
+            "status": "not_configured",
+            "message": "Route is not an enabled Route Pool candidate"
+        }));
+    }
+
+    let (changed, state_snapshot) = clear_route_pool_ban_state(&state.route_pool_state, route);
+    record_route_pool_event(
+        &state.route_pool_events,
+        "route_pool_candidate_ban_cleared",
+        route,
+        if changed {
+            "user_clear_ban"
+        } else {
+            "not_banned"
+        },
+        state_snapshot
+            .as_ref()
+            .map(|state| state.consecutive_failures),
+        state_snapshot
+            .as_ref()
+            .and_then(|state| state.banned_until_epoch_secs),
+    );
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "route": route,
+        "status": if changed { "cleared" } else { "not_banned" },
+        "changed": changed,
+        "state": state_snapshot
+    }))
+}
+
+async fn reset_route_pool_route(
+    req: HttpRequest,
+    body: web::Json<RoutePoolRouteActionRequest>,
+    state: web::Data<Arc<AppState>>,
+) -> HttpResponse {
+    let config = state.get_config().await;
+    if !auth_check(&req, &config) {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let route = body.route.trim();
+    if !configured_route_exists(&config, route) {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "ok": false,
+            "route": route,
+            "status": "not_configured",
+            "message": "Route is not an enabled Route Pool candidate"
+        }));
+    }
+
+    let changed = reset_route_pool_route_state(&state.route_pool_state, route);
+    record_route_pool_event(
+        &state.route_pool_events,
+        "route_pool_candidate_reset",
+        route,
+        "user_reset_route_state",
+        Some(0),
+        None,
+    );
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "route": route,
+        "status": if changed { "reset" } else { "already_empty" },
+        "changed": changed,
+        "state": RoutePoolRouteState::default()
+    }))
+}
+
+fn configured_route_exists(config: &Config, route: &str) -> bool {
+    route_pool_candidates(config, &[])
+        .iter()
+        .any(|candidate| candidate == route)
+}
+
 async fn get_preset(
     req: HttpRequest,
     path: web::Path<String>,
@@ -283,6 +413,7 @@ async fn messages(
             config: &config,
             transformers: &state.transformers,
             route_pool_state: &state.route_pool_state,
+            route_pool_events: &state.route_pool_events,
             metrics: &state.metrics,
         },
         InboundProtocol::AnthropicMessages,
@@ -392,6 +523,7 @@ async fn responses(body: web::Bytes, state: web::Data<Arc<AppState>>) -> HttpRes
             config: &config,
             transformers: &state.transformers,
             route_pool_state: &state.route_pool_state,
+            route_pool_events: &state.route_pool_events,
             metrics: &state.metrics,
         },
         InboundProtocol::OpenAiResponses,
@@ -760,6 +892,7 @@ async fn main() -> std::io::Result<()> {
         client,
         agents,
         route_pool_state: Arc::new(Mutex::new(HashMap::new())),
+        route_pool_events: Arc::new(Mutex::new(VecDeque::new())),
         metrics: Arc::new(Mutex::new(RuntimeMetricsStore::load(1000))),
     });
     let data = web::Data::new(state);
@@ -784,6 +917,18 @@ async fn main() -> std::io::Result<()> {
             .route(
                 "/api/route-pool/status",
                 web::get().to(get_route_pool_status),
+            )
+            .route(
+                "/api/route-pool/events",
+                web::get().to(get_route_pool_events),
+            )
+            .route(
+                "/api/route-pool/clear-ban",
+                web::post().to(clear_route_pool_ban),
+            )
+            .route(
+                "/api/route-pool/reset-route",
+                web::post().to(reset_route_pool_route),
             )
             .route(
                 "/api/runtime-metrics/attempts",
@@ -822,7 +967,7 @@ async fn main() -> std::io::Result<()> {
 mod tests {
     use super::*;
     use actix_web::body::to_bytes;
-    use ccr_types::{Message, TokenizerBackend};
+    use ccr_types::{Message, RoutePoolCandidate, RoutePoolConfig, TokenizerBackend};
     use std::path::PathBuf;
     use std::sync::{
         Arc,
@@ -869,8 +1014,25 @@ mod tests {
             client: reqwest::Client::new(),
             agents: vec![],
             route_pool_state: Arc::new(Mutex::new(HashMap::new())),
+            route_pool_events: Arc::new(Mutex::new(VecDeque::new())),
             metrics: Arc::new(Mutex::new(RuntimeMetricsStore::load(1000))),
         })
+    }
+
+    fn pool_config() -> Config {
+        Config {
+            route_pool: Some(RoutePoolConfig {
+                enabled: true,
+                failure_threshold: 3,
+                ban_seconds: 3600,
+                candidates: vec![RoutePoolCandidate {
+                    route: "p".to_string(),
+                    enabled: true,
+                    priority: 1,
+                }],
+            }),
+            ..Default::default()
+        }
     }
 
     #[actix_web::test]
@@ -980,5 +1142,174 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["input_tokens"].as_u64(), Some(77));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    #[actix_web::test]
+    async fn route_pool_action_requires_auth() {
+        let mut config = pool_config();
+        config.api_key = Some("secret".to_string());
+        let state = web::Data::new(test_state(config));
+        let req = actix_web::test::TestRequest::post().to_http_request();
+        let body = web::Json(RoutePoolRouteActionRequest {
+            route: "p".to_string(),
+        });
+
+        let resp = clear_route_pool_ban(req, body, state).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn route_pool_clear_ban_reports_not_configured_not_banned_and_cleared() {
+        let mut config = pool_config();
+        config.api_key = Some("secret".to_string());
+        let state = web::Data::new(test_state(config.clone()));
+        let authed_req = || {
+            actix_web::test::TestRequest::post()
+                .insert_header(("authorization", "Bearer secret"))
+                .to_http_request()
+        };
+
+        let missing = clear_route_pool_ban(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "missing".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(missing.status(), actix_web::http::StatusCode::NOT_FOUND);
+
+        let ready = clear_route_pool_ban(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "p".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(ready.status(), actix_web::http::StatusCode::OK);
+        let ready_body = to_bytes(ready.into_body()).await.unwrap();
+        let ready_value: serde_json::Value = serde_json::from_slice(&ready_body).unwrap();
+        assert_eq!(ready_value["status"], "not_banned");
+        assert_eq!(ready_value["changed"], false);
+
+        state.route_pool_state.lock().unwrap().insert(
+            "p".to_string(),
+            RoutePoolRouteState {
+                consecutive_failures: 3,
+                banned_until_epoch_secs: Some(3702),
+                last_error: Some("failed".to_string()),
+                last_failure_epoch_secs: Some(102),
+                last_success_epoch_secs: None,
+            },
+        );
+
+        let cleared = clear_route_pool_ban(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "p".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(cleared.status(), actix_web::http::StatusCode::OK);
+        let cleared_body = to_bytes(cleared.into_body()).await.unwrap();
+        let cleared_value: serde_json::Value = serde_json::from_slice(&cleared_body).unwrap();
+        assert_eq!(cleared_value["status"], "cleared");
+        assert_eq!(cleared_value["changed"], true);
+        assert_eq!(
+            state
+                .route_pool_state
+                .lock()
+                .unwrap()
+                .get("p")
+                .unwrap()
+                .banned_until_epoch_secs,
+            None
+        );
+    }
+
+    #[actix_web::test]
+    async fn route_pool_reset_route_reports_clear_semantics_and_event_query_is_authed() {
+        let mut config = pool_config();
+        config.api_key = Some("secret".to_string());
+        let state = web::Data::new(test_state(config));
+        state.route_pool_state.lock().unwrap().insert(
+            "p".to_string(),
+            RoutePoolRouteState {
+                consecutive_failures: 2,
+                last_error: Some("failed".to_string()),
+                ..Default::default()
+            },
+        );
+        let authed_req = || {
+            actix_web::test::TestRequest::post()
+                .insert_header(("authorization", "Bearer secret"))
+                .to_http_request()
+        };
+
+        let unauth_events = get_route_pool_events(
+            actix_web::test::TestRequest::get().to_http_request(),
+            web::Query(HashMap::new()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(
+            unauth_events.status(),
+            actix_web::http::StatusCode::UNAUTHORIZED
+        );
+
+        let missing = reset_route_pool_route(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "missing".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(missing.status(), actix_web::http::StatusCode::NOT_FOUND);
+
+        let reset = reset_route_pool_route(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "p".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(reset.status(), actix_web::http::StatusCode::OK);
+        let reset_body = to_bytes(reset.into_body()).await.unwrap();
+        let reset_value: serde_json::Value = serde_json::from_slice(&reset_body).unwrap();
+        assert_eq!(reset_value["status"], "reset");
+        assert!(!state.route_pool_state.lock().unwrap().contains_key("p"));
+
+        let already_empty = reset_route_pool_route(
+            authed_req(),
+            web::Json(RoutePoolRouteActionRequest {
+                route: "p".to_string(),
+            }),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(already_empty.status(), actix_web::http::StatusCode::OK);
+        let already_empty_body = to_bytes(already_empty.into_body()).await.unwrap();
+        let already_empty_value: serde_json::Value =
+            serde_json::from_slice(&already_empty_body).unwrap();
+        assert_eq!(already_empty_value["status"], "already_empty");
+        assert_eq!(already_empty_value["changed"], false);
+
+        let events_req = actix_web::test::TestRequest::get()
+            .insert_header(("authorization", "Bearer secret"))
+            .to_http_request();
+        let events = get_route_pool_events(
+            events_req,
+            web::Query(HashMap::from([("limit".to_string(), "10".to_string())])),
+            state,
+        )
+        .await;
+        assert_eq!(events.status(), actix_web::http::StatusCode::OK);
+        let events_body = to_bytes(events.into_body()).await.unwrap();
+        let events_value: serde_json::Value = serde_json::from_slice(&events_body).unwrap();
+        assert_eq!(events_value[0]["event_type"], "route_pool_candidate_reset");
     }
 }

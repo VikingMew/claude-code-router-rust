@@ -1,5 +1,5 @@
 use crate::metrics::{RouteMetricSummary, RuntimeMetricsDiagnostics, TtftMetricSummary};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -25,6 +25,31 @@ pub struct RoutePoolRouteStatus {
     pub last_success_epoch_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RoutePoolEvent {
+    pub timestamp_epoch_secs: u64,
+    pub event_type: String,
+    pub route: String,
+    pub reason: String,
+    pub consecutive_failures: Option<u32>,
+    pub banned_until_epoch_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RoutePoolActionResponse {
+    pub ok: bool,
+    pub route: String,
+    pub status: String,
+    pub changed: bool,
+    pub state: Option<RoutePoolRouteStatus>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RoutePoolActionRequest<'a> {
+    route: &'a str,
+}
+
 pub fn fetch_route_pool_status(
     port: u16,
     api_key: Option<&str>,
@@ -32,6 +57,40 @@ pub fn fetch_route_pool_status(
     fetch_json(
         &format!("http://127.0.0.1:{port}/api/route-pool/status"),
         api_key,
+    )
+}
+
+pub fn fetch_route_pool_events(
+    port: u16,
+    api_key: Option<&str>,
+) -> Result<Vec<RoutePoolEvent>, String> {
+    fetch_json(
+        &format!("http://127.0.0.1:{port}/api/route-pool/events?limit=50"),
+        api_key,
+    )
+}
+
+pub fn clear_route_pool_ban(
+    port: u16,
+    api_key: Option<&str>,
+    route: &str,
+) -> Result<RoutePoolActionResponse, String> {
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/route-pool/clear-ban"),
+        api_key,
+        &RoutePoolActionRequest { route },
+    )
+}
+
+pub fn reset_route_pool_route(
+    port: u16,
+    api_key: Option<&str>,
+    route: &str,
+) -> Result<RoutePoolActionResponse, String> {
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/route-pool/reset-route"),
+        api_key,
+        &RoutePoolActionRequest { route },
     )
 }
 
@@ -93,10 +152,37 @@ where
     response.json().map_err(|error| error.to_string())
 }
 
+fn post_json<T, B>(url: &str, api_key: Option<&str>, body: &B) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+    B: Serialize + ?Sized,
+{
+    let client = reqwest::blocking::Client::builder()
+        .timeout(STATUS_API_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client.post(url).json(body);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        if response.status().as_u16() == 401 {
+            return Err(
+                "unauthorized. The UI config API key does not match the running server."
+                    .to_string(),
+            );
+        }
+        return Err(format!("HTTP {}", response.status()));
+    }
+    response.json().map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
 
@@ -121,9 +207,54 @@ mod tests {
     }
 
     fn read_request(stream: &mut TcpStream) -> String {
+        stream.set_nonblocking(true).expect("set nonblocking");
         let mut buffer = [0; 2048];
-        let size = stream.read(&mut buffer).expect("read request");
-        String::from_utf8_lossy(&buffer[..size]).into_owned()
+        let mut request = Vec::new();
+        let mut header_end = None;
+        let mut expected_len = None;
+        let started = std::time::Instant::now();
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(size) => {
+                    request.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|position| position + 4);
+                        if let Some(header_end) = header_end {
+                            expected_len = Some(
+                                header_end + content_length(&request[..header_end]).unwrap_or(0),
+                            );
+                        }
+                    }
+                    if expected_len.is_some_and(|len| request.len() >= len) {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    if expected_len.is_some() || started.elapsed() >= Duration::from_millis(100) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("read request: {error}"),
+            }
+        }
+        String::from_utf8_lossy(&request).into_owned()
+    }
+
+    fn content_length(headers: &[u8]) -> Option<usize> {
+        let headers = String::from_utf8_lossy(headers);
+        headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })
     }
 
     #[test]
@@ -166,6 +297,93 @@ mod tests {
                 .as_deref(),
             Some("timeout")
         );
+    }
+
+    #[test]
+    fn route_pool_events_fetch_parses_recent_events_and_sends_auth() {
+        let body = r#"[{
+            "timestamp_epoch_secs": 100,
+            "event_type": "route_pool_candidate_banned",
+            "route": "anthropic,claude",
+            "reason": "HTTP 429",
+            "consecutive_failures": 3,
+            "banned_until_epoch_secs": 200
+        }]"#;
+        let (port, handle) = serve_once("200 OK", body);
+
+        let events = fetch_route_pool_events(port, Some("secret-token")).expect("events");
+        let request = handle.join().expect("request capture");
+
+        assert!(request.starts_with("GET /api/route-pool/events?limit=50 HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret-token")
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "route_pool_candidate_banned");
+        assert_eq!(events[0].consecutive_failures, Some(3));
+    }
+
+    #[test]
+    fn route_pool_clear_ban_posts_route_and_sends_auth() {
+        let body = r#"{
+            "ok": true,
+            "route": "anthropic,claude",
+            "status": "cleared",
+            "changed": true,
+            "state": {
+                "consecutive_failures": 3,
+                "banned_until_epoch_secs": null,
+                "last_error": "HTTP 429",
+                "last_failure_epoch_secs": 100,
+                "last_success_epoch_secs": null
+            },
+            "message": null
+        }"#;
+        let (port, handle) = serve_once("200 OK", body);
+
+        let response =
+            clear_route_pool_ban(port, Some("secret-token"), "anthropic,claude").expect("clear");
+        let request = handle.join().expect("request capture");
+
+        assert!(request.starts_with("POST /api/route-pool/clear-ban HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret-token")
+        );
+        assert!(request.contains(r#""route":"anthropic,claude""#));
+        assert_eq!(response.status, "cleared");
+        assert!(response.changed);
+        assert_eq!(response.state.unwrap().banned_until_epoch_secs, None);
+    }
+
+    #[test]
+    fn route_pool_reset_route_posts_route() {
+        let body = r#"{
+            "ok": true,
+            "route": "anthropic,claude",
+            "status": "reset",
+            "changed": true,
+            "state": {
+                "consecutive_failures": 0,
+                "banned_until_epoch_secs": null,
+                "last_error": null,
+                "last_failure_epoch_secs": null,
+                "last_success_epoch_secs": null
+            },
+            "message": null
+        }"#;
+        let (port, handle) = serve_once("200 OK", body);
+
+        let response = reset_route_pool_route(port, None, "anthropic,claude").expect("reset");
+        let request = handle.join().expect("request capture");
+
+        assert!(request.starts_with("POST /api/route-pool/reset-route HTTP/1.1"));
+        assert!(request.contains(r#""route":"anthropic,claude""#));
+        assert_eq!(response.status, "reset");
+        assert_eq!(response.state.unwrap().consecutive_failures, 0);
     }
 
     #[test]

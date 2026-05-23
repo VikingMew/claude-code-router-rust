@@ -16,10 +16,12 @@ use ccr_server::{
 use ccr_transformer::TransformerRegistry;
 use ccr_types::Config;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 use tracing::{info, warn};
+
+pub(crate) const ROUTE_POOL_EVENT_HISTORY_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct RoutePoolRouteState {
@@ -37,6 +39,16 @@ impl RoutePoolRouteState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RoutePoolEvent {
+    pub(crate) timestamp_epoch_secs: u64,
+    pub(crate) event_type: String,
+    pub(crate) route: String,
+    pub(crate) reason: String,
+    pub(crate) consecutive_failures: Option<u32>,
+    pub(crate) banned_until_epoch_secs: Option<u64>,
+}
+
 pub(crate) struct UpstreamAttemptResponse {
     pub(crate) response: reqwest::Response,
     pub(crate) stream: bool,
@@ -50,6 +62,7 @@ pub(crate) struct RoutePoolRuntime<'a> {
     pub(crate) config: &'a Config,
     pub(crate) transformers: &'a TransformerRegistry,
     pub(crate) route_pool_state: &'a Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    pub(crate) route_pool_events: &'a Arc<Mutex<VecDeque<RoutePoolEvent>>>,
     pub(crate) metrics: &'a Arc<Mutex<RuntimeMetricsStore>>,
 }
 
@@ -64,6 +77,7 @@ pub(crate) async fn send_with_route_pool(
         config,
         transformers,
         route_pool_state,
+        route_pool_events,
         metrics,
     } = runtime;
 
@@ -103,7 +117,18 @@ pub(crate) async fn send_with_route_pool(
             .and_then(|state| state.get(route).cloned())
             .is_some_and(|state| state.is_banned(now));
         if banned {
-            log_route_pool_event("route_pool_candidate_skipped", route, "banned", None);
+            record_route_pool_event(
+                route_pool_events,
+                "route_pool_candidate_skipped",
+                route,
+                "banned",
+                None,
+                route_pool_state
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.get(route).cloned())
+                    .and_then(|state| state.banned_until_epoch_secs),
+            );
         }
         !banned
     });
@@ -112,7 +137,7 @@ pub(crate) async fn send_with_route_pool(
         attempted_count += 1;
         let Some(provider) = find_provider(&route, config) else {
             let error = provider_not_found_message(&route, config);
-            record_route_pool_failure(route_pool_state, config, &route, &error);
+            record_route_pool_failure(route_pool_state, route_pool_events, config, &route, &error);
             record_attempt_metric(
                 metrics,
                 request_context.request_id.as_str(),
@@ -169,7 +194,13 @@ pub(crate) async fn send_with_route_pool(
                     None,
                     &[],
                 );
-                record_route_pool_failure(route_pool_state, config, &route, &error);
+                record_route_pool_failure(
+                    route_pool_state,
+                    route_pool_events,
+                    config,
+                    &route,
+                    &error,
+                );
                 record_attempt_metric(
                     metrics,
                     request_context.request_id.as_str(),
@@ -237,6 +268,7 @@ pub(crate) async fn send_with_route_pool(
                     ));
                     record_route_pool_failure(
                         route_pool_state,
+                        route_pool_events,
                         config,
                         &route,
                         last_error.as_deref().unwrap_or("upstream failed"),
@@ -258,7 +290,7 @@ pub(crate) async fn send_with_route_pool(
                     continue;
                 }
                 if response.status().is_success() {
-                    record_route_pool_success(route_pool_state, &route);
+                    record_route_pool_success(route_pool_state, route_pool_events, &route);
                 }
                 let mut attempt_metric = upstream_attempt_metric(
                     request_context.request_id.as_str(),
@@ -335,7 +367,13 @@ pub(crate) async fn send_with_route_pool(
             Err(error) => {
                 let latency_ms = start.elapsed().as_millis() as u64;
                 warn!(route = %route, error = %error, "Upstream request failed");
-                record_route_pool_failure(route_pool_state, config, &route, &error.to_string());
+                record_route_pool_failure(
+                    route_pool_state,
+                    route_pool_events,
+                    config,
+                    &route,
+                    &error.to_string(),
+                );
                 record_attempt_metric(
                     metrics,
                     request_context.request_id.as_str(),
@@ -384,7 +422,14 @@ pub(crate) async fn send_with_route_pool(
         attempted_count,
         RequestOutcome::Failed,
     );
-    log_route_pool_event("route_pool_exhausted", "<route-pool>", &error, None);
+    record_route_pool_event(
+        route_pool_events,
+        "route_pool_exhausted",
+        "<route-pool>",
+        &error,
+        None,
+        None,
+    );
     log_upstream_event(
         "final_failure",
         inbound,
@@ -441,11 +486,19 @@ pub(crate) fn should_try_next_status(status: reqwest::StatusCode, _pool_enabled:
 
 fn record_route_pool_success(
     states: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    events: &Arc<Mutex<VecDeque<RoutePoolEvent>>>,
     route: &str,
 ) {
     let now = epoch_secs(SystemTime::now());
     if apply_route_pool_success(states, route, now) {
-        log_route_pool_event("route_pool_candidate_recovered", route, "success", None);
+        record_route_pool_event(
+            events,
+            "route_pool_candidate_recovered",
+            route,
+            "success",
+            Some(0),
+            None,
+        );
     }
 }
 
@@ -467,6 +520,7 @@ pub(crate) fn apply_route_pool_success(
 
 fn record_route_pool_failure(
     states: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    events: &Arc<Mutex<VecDeque<RoutePoolEvent>>>,
     config: &Config,
     route: &str,
     error: &str,
@@ -478,18 +532,22 @@ fn record_route_pool_failure(
     let (failures, banned_until) =
         apply_route_pool_failure(states, route, error, threshold, ban_seconds, now_secs);
 
-    log_route_pool_event(
+    record_route_pool_event(
+        events,
         "route_pool_candidate_failed",
         route,
         error,
-        Some(("consecutive_failures", failures.to_string())),
+        Some(failures),
+        None,
     );
     if let Some(until) = banned_until {
-        log_route_pool_event(
+        record_route_pool_event(
+            events,
             "route_pool_candidate_banned",
             route,
             error,
-            Some(("banned_until_epoch_secs", until.to_string())),
+            Some(failures),
+            Some(until),
         );
     }
 }
@@ -521,20 +579,63 @@ pub(crate) fn apply_route_pool_failure(
     (failures, banned_until)
 }
 
-fn log_route_pool_event(
-    event: &str,
+pub(crate) fn record_route_pool_event(
+    events: &Arc<Mutex<VecDeque<RoutePoolEvent>>>,
+    event_type: &str,
     route: &str,
-    error: &str,
-    extra: Option<(&'static str, String)>,
+    reason: &str,
+    consecutive_failures: Option<u32>,
+    banned_until_epoch_secs: Option<u64>,
 ) {
-    let mut fields = vec![
-        ("route", route_for_display(route)),
-        ("error", ccr_app_core::logging::ui_error_summary(error)),
-    ];
-    if let Some(extra) = extra {
-        fields.push(extra);
+    let route = route_for_display(route);
+    let reason = ccr_app_core::logging::ui_error_summary(reason);
+    let mut fields = vec![("route", route.clone()), ("error", reason.clone())];
+    if let Some(consecutive_failures) = consecutive_failures {
+        fields.push(("consecutive_failures", consecutive_failures.to_string()));
     }
-    ccr_app_core::logging::append_app_log("route-pool", event, &fields);
+    if let Some(banned_until_epoch_secs) = banned_until_epoch_secs {
+        fields.push((
+            "banned_until_epoch_secs",
+            banned_until_epoch_secs.to_string(),
+        ));
+    }
+    ccr_app_core::logging::append_app_log("route-pool", event_type, &fields);
+
+    if let Ok(mut events) = events.lock() {
+        if events.len() >= ROUTE_POOL_EVENT_HISTORY_LIMIT {
+            events.pop_front();
+        }
+        events.push_back(RoutePoolEvent {
+            timestamp_epoch_secs: epoch_secs(SystemTime::now()),
+            event_type: event_type.to_string(),
+            route,
+            reason,
+            consecutive_failures,
+            banned_until_epoch_secs,
+        });
+    }
+}
+
+pub(crate) fn clear_route_pool_ban_state(
+    states: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    route: &str,
+) -> (bool, Option<RoutePoolRouteState>) {
+    let Ok(mut states) = states.lock() else {
+        return (false, None);
+    };
+    let state = states.entry(route.to_string()).or_default();
+    let changed = state.banned_until_epoch_secs.take().is_some();
+    (changed, Some(state.clone()))
+}
+
+pub(crate) fn reset_route_pool_route_state(
+    states: &Arc<Mutex<HashMap<String, RoutePoolRouteState>>>,
+    route: &str,
+) -> bool {
+    let Ok(mut states) = states.lock() else {
+        return false;
+    };
+    states.remove(route).is_some()
 }
 
 #[cfg(test)]
@@ -640,5 +741,69 @@ mod tests {
             error.as_deref(),
             Some("Upstream b unavailable: second error")
         );
+    }
+
+    #[test]
+    fn event_history_is_bounded_and_recent() {
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+
+        for index in 0..(ROUTE_POOL_EVENT_HISTORY_LIMIT + 5) {
+            record_route_pool_event(
+                &events,
+                "route_pool_candidate_failed",
+                "p",
+                &format!("error-{index}"),
+                Some(index as u32),
+                None,
+            );
+        }
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), ROUTE_POOL_EVENT_HISTORY_LIMIT);
+        assert_eq!(events.front().unwrap().reason, "error-5");
+        assert_eq!(
+            events.back().unwrap().event_type,
+            "route_pool_candidate_failed"
+        );
+    }
+
+    #[test]
+    fn clear_ban_state_keeps_failures_and_clears_only_ban() {
+        let states = Arc::new(Mutex::new(HashMap::from([(
+            "p".to_string(),
+            RoutePoolRouteState {
+                consecutive_failures: 3,
+                banned_until_epoch_secs: Some(1000),
+                last_error: Some("failed".to_string()),
+                last_failure_epoch_secs: Some(10),
+                last_success_epoch_secs: None,
+            },
+        )])));
+
+        let (changed, state) = clear_route_pool_ban_state(&states, "p");
+
+        assert!(changed);
+        let state = state.unwrap();
+        assert_eq!(state.consecutive_failures, 3);
+        assert_eq!(state.banned_until_epoch_secs, None);
+        assert_eq!(state.last_error.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn reset_route_state_removes_runtime_state() {
+        let states = Arc::new(Mutex::new(HashMap::from([(
+            "p".to_string(),
+            RoutePoolRouteState {
+                consecutive_failures: 3,
+                banned_until_epoch_secs: Some(1000),
+                last_error: Some("failed".to_string()),
+                last_failure_epoch_secs: Some(10),
+                last_success_epoch_secs: Some(20),
+            },
+        )])));
+
+        assert!(reset_route_pool_route_state(&states, "p"));
+        assert!(!states.lock().unwrap().contains_key("p"));
+        assert!(!reset_route_pool_route_state(&states, "p"));
     }
 }

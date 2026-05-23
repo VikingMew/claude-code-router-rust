@@ -13,7 +13,9 @@ use ccr_app_core::{
         MetricsFileDiagnostics, RouteMetricSummary, RuntimeMetricsDiagnostics, TtftMetricSummary,
     },
     official_provider::{OfficialCredentialState, OfficialCredentialStatus},
-    runtime_status::RoutePoolStatusResponse,
+    runtime_status::{
+        clear_route_pool_ban, reset_route_pool_route, RoutePoolEvent, RoutePoolStatusResponse,
+    },
 };
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -32,6 +34,12 @@ enum OperationTarget {
     Hermes,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RoutePoolActionKind {
+    ClearBan,
+    ResetRoute,
+}
+
 #[derive(Debug, Clone)]
 enum StatusTaskResult {
     Snapshot {
@@ -44,6 +52,10 @@ enum StatusTaskResult {
         target: OperationTarget,
         message: String,
         snapshot: StatusSnapshot,
+    },
+    RoutePoolAction {
+        message: String,
+        snapshot: RuntimeStatusSnapshot,
     },
 }
 
@@ -67,9 +79,12 @@ pub struct StatusTab {
     server_operation_status: String,
     server_operation_checking: bool,
     route_pool_status: Option<Result<RoutePoolStatusResponse, String>>,
+    route_pool_events: Option<Result<Vec<RoutePoolEvent>, String>>,
     runtime_metrics_summary: Option<Result<Vec<RouteMetricSummary>, String>>,
     ttft_metrics_summary: Option<Result<Vec<TtftMetricSummary>, String>>,
     runtime_metrics_diagnostics: Option<Result<RuntimeMetricsDiagnostics, String>>,
+    route_pool_action_status: String,
+    route_pool_action_checking: bool,
     route_pool_last_refresh: Option<Instant>,
     route_pool_refreshing: bool,
     status_last_refresh: Option<Instant>,
@@ -98,9 +113,12 @@ impl StatusTab {
             server_operation_status: String::new(),
             server_operation_checking: false,
             route_pool_status: None,
+            route_pool_events: None,
             runtime_metrics_summary: None,
             ttft_metrics_summary: None,
             runtime_metrics_diagnostics: None,
+            route_pool_action_status: String::new(),
+            route_pool_action_checking: false,
             route_pool_last_refresh: None,
             route_pool_refreshing: false,
             status_last_refresh: None,
@@ -270,6 +288,7 @@ impl StatusTab {
                 }
                 StatusTaskResult::Runtime(snapshot) => {
                     self.route_pool_status = Some(snapshot.route_pool_status);
+                    self.route_pool_events = Some(snapshot.route_pool_events);
                     self.runtime_metrics_summary = Some(snapshot.runtime_metrics_summary);
                     self.ttft_metrics_summary = Some(snapshot.ttft_metrics_summary);
                     self.runtime_metrics_diagnostics = Some(snapshot.runtime_metrics_diagnostics);
@@ -314,6 +333,16 @@ impl StatusTab {
                         }
                     }
                 }
+                StatusTaskResult::RoutePoolAction { message, snapshot } => {
+                    self.route_pool_action_status = message;
+                    self.route_pool_status = Some(snapshot.route_pool_status);
+                    self.route_pool_events = Some(snapshot.route_pool_events);
+                    self.runtime_metrics_summary = Some(snapshot.runtime_metrics_summary);
+                    self.ttft_metrics_summary = Some(snapshot.ttft_metrics_summary);
+                    self.route_pool_action_checking = false;
+                    self.route_pool_refreshing = false;
+                    self.route_pool_last_refresh = Some(Instant::now());
+                }
             }
             ctx.request_repaint();
         }
@@ -329,6 +358,7 @@ impl StatusTab {
             || self.hermes_checking
             || self.server_operation_checking
             || self.route_pool_refreshing
+            || self.route_pool_action_checking
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -437,6 +467,7 @@ impl StatusTab {
                 );
                 ui.label("Runtime: Not applicable until Route Pool has active routes");
                 self.route_pool_status = None;
+                self.route_pool_events = None;
                 self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
@@ -447,6 +478,7 @@ impl StatusTab {
                 ));
                 ui.label("Runtime: Not applicable while Route Pool is disabled");
                 self.route_pool_status = None;
+                self.route_pool_events = None;
                 self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
@@ -455,6 +487,7 @@ impl StatusTab {
                 ui.label("Route Pool: Not configured");
                 ui.label("Runtime: Not applicable");
                 self.route_pool_status = None;
+                self.route_pool_events = None;
                 self.runtime_metrics_diagnostics = None;
                 self.route_pool_last_refresh = None;
                 return;
@@ -471,16 +504,48 @@ impl StatusTab {
                     ui.label("Refreshing route runtime...");
                 });
             }
-            match &self.route_pool_status {
-                Some(Ok(status)) => show_route_pool_runtime(ui, status),
+            ui.label(
+                "Route Pool health state is kept for the current server session; restart clears bans and failure counters.",
+            );
+            if self.route_pool_action_checking {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Applying Route Pool action...");
+                });
+            }
+            show_status_message(ui, &self.route_pool_action_status);
+
+            let pending_action = match &self.route_pool_status {
+                Some(Ok(status)) => {
+                    show_route_pool_runtime(ui, status, self.route_pool_action_checking)
+                }
                 Some(Err(error)) => {
                     ui.colored_label(
                         egui::Color32::YELLOW,
                         format!("Route Pool runtime unavailable: {error}"),
                     );
+                    None
                 }
                 None => {
                     ui.label("Route Pool runtime: Loading.");
+                    None
+                }
+            };
+            if let Some((kind, route)) = pending_action {
+                let api_key = self.snapshot().api_key.clone();
+                self.perform_route_pool_action(server.port(), api_key.as_deref(), kind, route);
+            }
+
+            match &self.route_pool_events {
+                Some(Ok(events)) => show_route_pool_events(ui, events),
+                Some(Err(error)) => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!("Route Pool events unavailable: {error}"),
+                    );
+                }
+                None => {
+                    ui.label("Route Pool events: Loading.");
                 }
             }
             match &self.runtime_metrics_summary {
@@ -521,6 +586,7 @@ impl StatusTab {
             }
         } else {
             self.route_pool_status = None;
+            self.route_pool_events = None;
             self.runtime_metrics_summary = None;
             self.ttft_metrics_summary = None;
             self.runtime_metrics_diagnostics = None;
@@ -544,6 +610,42 @@ impl StatusTab {
         self.route_pool_last_refresh = Some(now);
         self.spawn_task(move || {
             StatusTaskResult::Runtime(fetch_runtime_status_snapshot(port, api_key.as_deref()))
+        });
+    }
+
+    fn perform_route_pool_action(
+        &mut self,
+        port: u16,
+        api_key: Option<&str>,
+        kind: RoutePoolActionKind,
+        route: String,
+    ) {
+        if self.route_pool_action_checking {
+            return;
+        }
+        let api_key = normalized_api_key(api_key).map(str::to_string);
+        self.route_pool_action_checking = true;
+        self.route_pool_action_status.clear();
+        self.spawn_task(move || {
+            let result = match kind {
+                RoutePoolActionKind::ClearBan => {
+                    clear_route_pool_ban(port, api_key.as_deref(), &route)
+                }
+                RoutePoolActionKind::ResetRoute => {
+                    reset_route_pool_route(port, api_key.as_deref(), &route)
+                }
+            };
+            let message = match result {
+                Ok(response) => format!(
+                    "✓ Route Pool action completed for {}: {}",
+                    response.route, response.status
+                ),
+                Err(error) => format!("✗ Route Pool action failed for {route}: {error}"),
+            };
+            StatusTaskResult::RoutePoolAction {
+                message,
+                snapshot: fetch_runtime_status_snapshot(port, api_key.as_deref()),
+            }
         });
     }
 
@@ -852,16 +954,21 @@ fn normalized_api_key(api_key: Option<&str>) -> Option<&str> {
     api_key.map(str::trim).filter(|key| !key.is_empty())
 }
 
-fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) {
+fn show_route_pool_runtime(
+    ui: &mut egui::Ui,
+    status: &RoutePoolStatusResponse,
+    action_checking: bool,
+) -> Option<(RoutePoolActionKind, String)> {
     ui.label(format!(
         "Route Pool runtime: enabled={}, policy {} failures, {}s ban",
         status.enabled, status.failure_threshold, status.ban_seconds
     ));
     if status.routes.is_empty() {
         ui.label("No runtime failures recorded.");
-        return;
+        return None;
     }
 
+    let mut action = None;
     let mut routes = status.routes.iter().collect::<Vec<_>>();
     routes.sort_by_key(|(route, _)| *route);
     for (route, state) in routes {
@@ -885,6 +992,44 @@ fn show_route_pool_runtime(ui: &mut egui::Ui, status: &RoutePoolStatusResponse) 
             }
             if let Some(error) = &state.last_error {
                 ui.label(format!("Error: {error}"));
+            }
+            if banned
+                && ui
+                    .add_enabled(!action_checking, egui::Button::new("Clear ban"))
+                    .clicked()
+            {
+                action = Some((RoutePoolActionKind::ClearBan, route.clone()));
+            }
+            if ui
+                .add_enabled(!action_checking, egui::Button::new("Reset state"))
+                .clicked()
+            {
+                action = Some((RoutePoolActionKind::ResetRoute, route.clone()));
+            }
+        });
+    }
+    action
+}
+
+fn show_route_pool_events(ui: &mut egui::Ui, events: &[RoutePoolEvent]) {
+    ui.label("Recent Route Pool events:");
+    if events.is_empty() {
+        ui.label("No Route Pool events recorded in this server session.");
+        return;
+    }
+    for event in events.iter().rev().take(12) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("{}", event.timestamp_epoch_secs));
+            ui.label(&event.event_type);
+            ui.label(&event.route);
+            if let Some(failures) = event.consecutive_failures {
+                ui.label(format!("Failures: {failures}"));
+            }
+            if let Some(until) = event.banned_until_epoch_secs {
+                ui.label(format!("Ban until: {until}"));
+            }
+            if !event.reason.is_empty() {
+                ui.label(format!("Reason: {}", event.reason));
             }
         });
     }
