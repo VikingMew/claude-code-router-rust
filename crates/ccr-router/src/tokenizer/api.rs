@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -15,7 +16,7 @@ struct TokenizeResponse {
 
 pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, String> {
     let mut builder = Client::builder().timeout(Duration::from_secs(5));
-    if endpoint_uses_loopback(endpoint) {
+    if is_loopback_endpoint(endpoint) {
         builder = builder.no_proxy();
     }
     let client = builder
@@ -51,13 +52,16 @@ pub async fn count_tokens_api(text: &str, endpoint: &str) -> Result<usize, Strin
     Ok(result.token_count)
 }
 
-fn endpoint_uses_loopback(endpoint: &str) -> bool {
-    reqwest::Url::parse(endpoint)
-        .ok()
-        .and_then(|url| url.host_str().map(is_loopback_host))
-        .unwrap_or(false)
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|addr| addr.is_loopback())
+            .unwrap_or(false)
 }
