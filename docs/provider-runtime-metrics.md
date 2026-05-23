@@ -2,6 +2,7 @@
 
 **状态：** 长期设计文档  
 **范围：** 记录 provider/model 在真实请求中产生的运行时指标、聚合窗口和 UI 使用方式
+**最后验证：** 2026-05-21
 
 ## 产品边界
 
@@ -338,6 +339,24 @@ Logs 页面需要能跳转到相关 request / attempt 记录。
 外部 sink 必须是显式 opt-in，不能默认上传。
 
 local metrics store 是 Route Pool 决策的权威来源。PostHog 或其他外部 sink 只能用于分析和展示，不能成为本地请求路由的唯一依赖。
+
+## 当前本地存储边界
+
+当前实现把真实流量 metrics 存在本机 JSONL 文件中：
+
+- attempt metrics：`~/.claude-code-router/runtime-metrics.jsonl`
+- request metrics：`~/.claude-code-router/runtime-request-metrics.jsonl`
+
+两个 metrics 文件默认最大 5 MiB。启动读取和 append 后会执行 fail-open retention：如果文件超过上限，CCR 会保留可解析的最近 JSONL 记录并丢弃坏行；如果 retention 或读取失败，server 仍然启动并继续使用已读取到的最近有效内存窗口。诊断结构会记录文件路径、读取行数、成功行数、坏行数、最近解析错误摘要、文件大小、retention 是否执行和保留行数，并通过受控 runtime metrics diagnostics API 供 status/UI 读取。
+
+本地 app log 和 server tracing log 是独立诊断数据：
+
+- app log：`~/.claude-code-router/claude-code-router-YYYY-MM-DD.log`
+- server tracing log：`~/.claude-code-router/logs/ccr-server.log.YYYY-MM-DD`
+
+app log 由受控 logs API 查询或清空；server tracing log 使用 daily rolling 文件。metrics JSONL 的 retention 不清理 app log，logs API 的清空也不清理 metrics JSONL。
+
+默认不会上传、导出或同步这些本地 metrics 和日志。任何外部 sink、file export 或诊断包都必须由用户显式触发或配置，并继续遵守不保存 API key、完整 prompt 和完整 response 的边界。
 
 敏感信息不能进入指标事件：
 
