@@ -1,4 +1,6 @@
-use ccr_app_core::logging::{app_log_path, append_app_log, parse_app_log_line, LogQuery};
+use ccr_app_core::logging::{
+    app_log_path, append_app_log, log_event_matches_query, parse_app_log_line, LogQuery,
+};
 use eframe::egui;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -21,6 +23,8 @@ pub struct LogsTab {
     status: String,
     target_filter: String,
     event_filter: String,
+    provider_filter: String,
+    route_filter: String,
 }
 
 impl LogsTab {
@@ -35,6 +39,8 @@ impl LogsTab {
             status: String::new(),
             target_filter: String::new(),
             event_filter: String::new(),
+            provider_filter: String::new(),
+            route_filter: String::new(),
         }
     }
 
@@ -199,6 +205,10 @@ impl LogsTab {
             ui.text_edit_singleline(&mut self.target_filter);
             ui.label("Event");
             ui.text_edit_singleline(&mut self.event_filter);
+            ui.label("Provider");
+            ui.text_edit_singleline(&mut self.provider_filter);
+            ui.label("Route");
+            ui.text_edit_singleline(&mut self.route_filter);
         });
         if !self.status.is_empty() {
             ui.label(&self.status);
@@ -221,20 +231,24 @@ impl LogsTab {
     }
 
     fn filtered_lines(&self) -> Vec<String> {
-        if self.target_filter.trim().is_empty() && self.event_filter.trim().is_empty() {
+        if self.target_filter.trim().is_empty()
+            && self.event_filter.trim().is_empty()
+            && self.provider_filter.trim().is_empty()
+            && self.route_filter.trim().is_empty()
+        {
             return self.visible_lines.clone();
         }
         let query = LogQuery {
             target: non_empty_filter(&self.target_filter),
             event: non_empty_filter(&self.event_filter),
-            provider: None,
-            route: None,
+            provider: non_empty_filter(&self.provider_filter),
+            route: non_empty_filter(&self.route_filter),
             limit: Some(MAX_FILTERED_LINES),
         };
         self.visible_lines
             .iter()
             .filter_map(|line| parse_app_log_line(line))
-            .filter(|event| log_event_matches_filter(event, &query))
+            .filter(|event| log_event_matches_query(event, &query))
             .map(|event| event.raw)
             .take(MAX_FILTERED_LINES)
             .collect()
@@ -342,23 +356,6 @@ fn truncate_display_line(line: &str) -> String {
         .collect::<String>();
     truncated.push_str("...");
     truncated
-}
-
-fn log_event_matches_filter(
-    event: &ccr_app_core::logging::ParsedLogEvent,
-    query: &LogQuery,
-) -> bool {
-    if query.target.as_deref().is_some_and(|v| event.target != v) {
-        return false;
-    }
-    if query
-        .event
-        .as_deref()
-        .is_some_and(|v| event.event.as_deref() != Some(v))
-    {
-        return false;
-    }
-    true
 }
 
 fn should_auto_refresh(
@@ -472,6 +469,27 @@ mod tests {
 
         assert!(filtered.contains("[upstream]"));
         assert!(!filtered.contains("[server]"));
+    }
+
+    #[test]
+    fn filtered_content_filters_by_provider_and_route() {
+        let mut tab = LogsTab::new();
+        tab.visible_lines = vec![
+            "2026-05-07T12:00:02+08:00 [upstream] event=\"result\" provider=\"openai\" route=\"primary,gpt-4o\"",
+            "2026-05-07T12:00:01+08:00 [upstream] event=\"result\" provider=\"anthropic\" route=\"primary,sonnet\"",
+            "2026-05-07T12:00:00+08:00 [upstream] event=\"result\" provider=\"openai\" route=\"fallback,gpt-4o-mini\"",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        tab.provider_filter = "openai".to_string();
+        tab.route_filter = "primary,gpt-4o".to_string();
+
+        let filtered = tab.filtered_lines();
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].contains("provider=\"openai\""));
+        assert!(filtered[0].contains("route=\"primary,gpt-4o\""));
     }
 
     #[test]

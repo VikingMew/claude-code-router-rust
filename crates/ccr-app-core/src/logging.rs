@@ -95,7 +95,7 @@ pub fn query_app_log_content(content: &str, query: &LogQuery) -> Vec<ParsedLogEv
     content
         .lines()
         .filter_map(parse_app_log_line)
-        .filter(|event| log_event_matches(event, query))
+        .filter(|event| log_event_matches_query(event, query))
         .rev()
         .take(limit)
         .collect::<Vec<_>>()
@@ -123,7 +123,7 @@ pub fn parse_app_log_line(line: &str) -> Option<ParsedLogEvent> {
     })
 }
 
-fn log_event_matches(event: &ParsedLogEvent, query: &LogQuery) -> bool {
+pub fn log_event_matches_query(event: &ParsedLogEvent, query: &LogQuery) -> bool {
     if query.target.as_deref().is_some_and(|v| event.target != v) {
         return false;
     }
@@ -413,5 +413,38 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].fields["route"], "anthropic,b");
+    }
+
+    #[test]
+    fn log_event_matches_query_filters_provider_and_route() {
+        let event = parse_app_log_line(
+            r#"2026-05-07T12:00:00+08:00 [upstream] event="result" provider="openai" route="primary,gpt-4o""#,
+        )
+        .unwrap();
+
+        assert!(log_event_matches_query(
+            &event,
+            &LogQuery {
+                provider: Some("openai".to_string()),
+                route: Some("primary,gpt-4o".to_string()),
+                ..LogQuery::default()
+            }
+        ));
+        assert!(!log_event_matches_query(
+            &event,
+            &LogQuery {
+                provider: Some("anthropic".to_string()),
+                route: Some("primary,gpt-4o".to_string()),
+                ..LogQuery::default()
+            }
+        ));
+        assert!(!log_event_matches_query(
+            &event,
+            &LogQuery {
+                provider: Some("openai".to_string()),
+                route: Some("fallback,sonnet".to_string()),
+                ..LogQuery::default()
+            }
+        ));
     }
 }
