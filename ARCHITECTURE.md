@@ -173,9 +173,11 @@ Current example:
 
 ### `ccr-plugin`
 
-Plugin experiments and supporting abstractions.
+Archived plugin experiments and supporting abstractions.
 
-This crate is not yet the main extension boundary for the desktop app.
+This crate is inactive experimental code and is intentionally not an active
+workspace member. It is not a runtime extension boundary for the desktop app,
+server, CLI, app-core, routing, transformer, SSE or agent paths.
 
 ## Runtime Request Paths
 
