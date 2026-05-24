@@ -1,27 +1,11 @@
 use ccr_types::{Config, Provider, RoutePoolCandidate};
 
 pub fn route_pool_candidates(config: &Config, tried_routes: &[String]) -> Vec<String> {
-    let Some(pool) = &config.route_pool else {
-        return Vec::new();
-    };
-    if !pool.enabled {
-        return Vec::new();
-    }
-
-    let mut candidates = pool.candidates.clone();
-    normalize_route_pool_order(&mut candidates);
-    let mut routes = Vec::new();
-    for candidate in candidates {
-        let route = candidate.route.trim();
-        if !candidate.enabled || route.is_empty() {
-            continue;
-        }
-        if tried_routes.iter().any(|tried| tried == route) || routes.iter().any(|r| r == route) {
-            continue;
-        }
-        routes.push(route.to_string());
-    }
-    routes
+    config
+        .active_route_pool_routes(tried_routes)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn normalize_route_pool_order(candidates: &mut [RoutePoolCandidate]) {

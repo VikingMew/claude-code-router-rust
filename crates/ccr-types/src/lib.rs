@@ -23,21 +23,35 @@ pub struct Config {
 
 impl Config {
     pub fn first_route_pool_route(&self) -> Option<&str> {
-        let mut candidates = self
-            .route_pool
-            .as_ref()?
-            .candidates
-            .iter()
-            .collect::<Vec<_>>();
+        self.active_route_pool_routes(&[]).into_iter().next()
+    }
+
+    pub fn active_route_pool_routes<'a>(&'a self, tried_routes: &[String]) -> Vec<&'a str> {
+        let Some(pool) = self.route_pool.as_ref() else {
+            return Vec::new();
+        };
+        if !pool.enabled {
+            return Vec::new();
+        }
+
+        let mut candidates = pool.candidates.iter().collect::<Vec<_>>();
         candidates.sort_by(|a, b| {
             a.priority
                 .cmp(&b.priority)
                 .then_with(|| a.route.cmp(&b.route))
         });
-        candidates
-            .into_iter()
-            .find(|candidate| candidate.enabled && !candidate.route.trim().is_empty())
-            .map(|candidate| candidate.route.trim())
+        let mut routes = Vec::new();
+        for candidate in candidates {
+            let route = candidate.route.trim();
+            if !candidate.enabled || route.is_empty() {
+                continue;
+            }
+            if tried_routes.iter().any(|tried| tried == route) || routes.contains(&route) {
+                continue;
+            }
+            routes.push(route);
+        }
+        routes
     }
 }
 
@@ -439,6 +453,69 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.first_route_pool_route(), Some("c"));
+    }
+
+    #[test]
+    fn first_route_pool_route_requires_enabled_pool() {
+        let config: Config = serde_json::from_str(
+            r#"{"Providers":[],"Router":{},"RoutePool":{"enabled":false,"candidates":[
+                {"route":"openai,gpt-4o","enabled":true,"priority":1}
+            ]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.first_route_pool_route(), None);
+        assert!(config.active_route_pool_routes(&[]).is_empty());
+    }
+
+    #[test]
+    fn active_route_pool_routes_filters_trims_orders_and_deduplicates() {
+        let config: Config = serde_json::from_str(
+            r#"{"Providers":[],"Router":{},"RoutePool":{"enabled":true,"candidates":[
+                {"route":" z ","enabled":true,"priority":2},
+                {"route":"  ","enabled":true,"priority":0},
+                {"route":"a","enabled":false,"priority":0},
+                {"route":"a","enabled":true,"priority":0},
+                {"route":" b ","enabled":true,"priority":1},
+                {"route":"b","enabled":true,"priority":1},
+                {"route":"c","enabled":true,"priority":1}
+            ]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.active_route_pool_routes(&[]),
+            vec!["a", "b", "c", "z"]
+        );
+        assert_eq!(config.first_route_pool_route(), Some("a"));
+    }
+
+    #[test]
+    fn first_route_pool_route_treats_inactive_pools_as_missing_route() {
+        let missing = Config::default();
+        assert_eq!(missing.first_route_pool_route(), None);
+
+        let empty: Config = serde_json::from_str(
+            r#"{"Providers":[],"Router":{},"RoutePool":{"enabled":true,"candidates":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(empty.first_route_pool_route(), None);
+
+        let all_disabled: Config = serde_json::from_str(
+            r#"{"Providers":[],"Router":{},"RoutePool":{"enabled":true,"candidates":[
+                {"route":"a","enabled":false}
+            ]}}"#,
+        )
+        .unwrap();
+        assert_eq!(all_disabled.first_route_pool_route(), None);
+
+        let whitespace_only: Config = serde_json::from_str(
+            r#"{"Providers":[],"Router":{},"RoutePool":{"enabled":true,"candidates":[
+                {"route":"  ","enabled":true}
+            ]}}"#,
+        )
+        .unwrap();
+        assert_eq!(whitespace_only.first_route_pool_route(), None);
     }
 
     #[test]
